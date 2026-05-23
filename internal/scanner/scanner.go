@@ -275,7 +275,7 @@ func scanPackages(root string, selected []string, timeout time.Duration) ([]Find
 			"GONOSUMCHECK=*",
 			"GONOSUMDB=*",
 			"GOPROXY=off",
-			"GOFLAGS=-mod=mod",
+			"GOWORK=off",
 		),
 	}
 	pkgs, err := packages.Load(cfg, "./...")
