@@ -91,3 +91,8 @@
   - docs/DOCUMENTATION.md: обновлены разделы 1, 2, 3, 4, 9, 12, 13; удалены ссылки на удалённые файлы (rules_c.go, rules_python.go, rules_csharp.go, scanFilesParallel); добавлен раздел gosec/govulncheck; Dockerfile — один образ.
   - ai_project_knowledge/ обновлён.
   - Выполнен init-коммит и push в main.
+- 2026-05-24: исправлена автокалибровка false_positive для HIGH/CRITICAL.
+  - Было: `false_positive` без митигации при HIGH/CRITICAL → принудительно `true_positive` (игнорировало вердикт модели).
+  - Стало: максимальный апгрейд — `needs_review`; `true_positive` ставит только сама модель.
+  - Обновлён тест `TestCalibrateVerdict_FalsePositiveWithoutMitigationToNeedsReview`.
+  - `go test ./internal/agent/...` — чистый.

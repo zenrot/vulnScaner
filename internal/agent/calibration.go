@@ -21,14 +21,13 @@ func calibrateVerdict(f scanner.Finding, v Verdict, snippet string) (Verdict, bo
 	switch v.Label {
 	case VerdictFalsePositive:
 		if !mitigated && !testLike {
-			if highRisk {
-				v.Label = VerdictTruePositive
-				v.Confidence = maxFloat(v.Confidence, 0.78)
-				v.Rationale = appendNote(v.Rationale, "Автокалибровка: для HIGH/CRITICAL без явной защиты помечено как true_positive.")
-				return v, verdictChanged(original, v), "false_positive_without_mitigation_high_risk"
-			}
 			v.Label = VerdictNeedsReview
 			v.Confidence = maxFloat(v.Confidence, 0.55)
+			if highRisk {
+				v.Confidence = maxFloat(v.Confidence, 0.65)
+				v.Rationale = appendNote(v.Rationale, "Автокалибровка: HIGH/CRITICAL без явной защиты в сниппете — требуется ручная проверка.")
+				return v, verdictChanged(original, v), "false_positive_without_mitigation_high_risk"
+			}
 			v.Rationale = appendNote(v.Rationale, "Автокалибровка: нет явной защиты в сниппете, требуется проверка.")
 			return v, verdictChanged(original, v), "false_positive_without_mitigation"
 		}

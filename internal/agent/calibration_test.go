@@ -35,7 +35,7 @@ func TestCalibrateVerdict_MediumNeedsReviewStaysNeedsReview(t *testing.T) {
 	}
 }
 
-func TestCalibrateVerdict_FalsePositiveWithoutMitigationToTruePositive(t *testing.T) {
+func TestCalibrateVerdict_FalsePositiveWithoutMitigationToNeedsReview(t *testing.T) {
 	f := scanner.Finding{
 		RuleID:   "GO-HARDCODED-SECRET",
 		Severity: scanner.SeverityHigh,
@@ -46,8 +46,8 @@ func TestCalibrateVerdict_FalsePositiveWithoutMitigationToTruePositive(t *testin
 	if !changed {
 		t.Fatalf("expected changed verdict")
 	}
-	if got.Label != VerdictTruePositive {
-		t.Fatalf("expected true_positive, got %s", got.Label)
+	if got.Label != VerdictNeedsReview {
+		t.Fatalf("expected needs_review, got %s", got.Label)
 	}
 }
 
