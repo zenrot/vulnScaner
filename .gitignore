@@ -1,7 +1,7 @@
 # Build artifacts
-sast-agent
-sast-agent-server
-server
+/sast-agent
+/sast-agent-server
+/server
 *.out
 coverage.txt
 
