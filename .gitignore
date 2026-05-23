@@ -25,6 +25,9 @@ scan-target/
 # Claude Code memory
 .claude/
 
+# Local AI project knowledge (не для удалённого репо)
+ai_project_knowledge/
+
 # Large test archives (keep source dirs, not zips)
 examples/*.zip
 examples/*.tar.gz
