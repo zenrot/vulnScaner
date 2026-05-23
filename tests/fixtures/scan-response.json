@@ -1,0 +1,129 @@
+{
+  "should_fail": true,
+  "correlation_id": "test-fixture",
+  "report": {
+    "findings": [
+      {
+        "finding": {
+          "rule_id": "command_injection",
+          "title": "Command Injection",
+          "severity": "CRITICAL",
+          "file": "examples/vuln-api/main.go",
+          "line": 45,
+          "column": 13,
+          "evidence": "exec.Command(\"sh\", \"-c\", \"ping -c 1 \"+host)",
+          "why_it_matters": "Пользовательский ввод передаётся в shell без санитизации — полный RCE.",
+          "remediation": "Использовать whitelist хостов или exec.Command без shell."
+        },
+        "verdict": {
+          "label": "true_positive",
+          "confidence": 0.97,
+          "rationale": "Переменная host берётся напрямую из r.FormValue и подставляется в sh -c без какой-либо валидации. Любой пользователь может выполнить произвольную команду.",
+          "remediation": "Заменить на exec.Command(\"ping\", \"-c\", \"1\", host) и валидировать host по регулярному выражению.",
+          "provider": "mock"
+        },
+        "snippet": "func pingHandler(w http.ResponseWriter, r *http.Request) {\n\thost := r.FormValue(\"host\")\n\tout, err := exec.Command(\"sh\", \"-c\", \"ping -c 1 \"+host).Output()\n\tif err != nil {\n\t\thttp.Error(w, err.Error(), 500)"
+      },
+      {
+        "finding": {
+          "rule_id": "hardcoded_secret",
+          "title": "Hardcoded Secret",
+          "severity": "HIGH",
+          "file": "examples/vuln-api/main.go",
+          "line": 17,
+          "column": 7,
+          "evidence": "adminPassword = \"superSecretAdmin123!\"",
+          "why_it_matters": "Секрет в коде попадает в git history и доступен всем с доступом к репозиторию.",
+          "remediation": "Вынести в переменную окружения или secrets-хранилище."
+        },
+        "verdict": {
+          "label": "true_positive",
+          "confidence": 0.99,
+          "rationale": "Пароль захардкожен в константе и используется в обработчике /token. Явная уязвимость.",
+          "remediation": "os.Getenv(\"ADMIN_PASSWORD\") с проверкой наличия при старте сервиса.",
+          "provider": "mock"
+        },
+        "snippet": "const adminPassword = \"superSecretAdmin123!\"\nconst apiToken      = \"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.prod\""
+      },
+      {
+        "finding": {
+          "rule_id": "sql_injection",
+          "title": "SQL Injection",
+          "severity": "HIGH",
+          "file": "examples/vuln-api/main.go",
+          "line": 88,
+          "column": 11,
+          "evidence": "fmt.Sprintf(\"SELECT id FROM users WHERE username='%s' AND password='%s'\", user, pass)",
+          "why_it_matters": "SQL-запрос строится конкатенацией без параметризации.",
+          "remediation": "Использовать параметризованные запросы: db.QueryRow(\"SELECT id FROM users WHERE username=? AND password=?\", user, pass)."
+        },
+        "verdict": {
+          "label": "true_positive",
+          "confidence": 0.95,
+          "rationale": "Поля user и pass берутся из FormValue и подставляются в строку SQL без экранирования. Классическая инъекция.",
+          "remediation": "Перейти на prepared statements или ORM с параметризацией.",
+          "provider": "mock"
+        },
+        "snippet": "user := r.FormValue(\"username\")\npass := r.FormValue(\"password\")\nquery := fmt.Sprintf(\n\t\"SELECT id FROM users WHERE username='%s' AND password='%s'\",\n\tuser, pass,\n)"
+      },
+      {
+        "finding": {
+          "rule_id": "ssrf",
+          "title": "SSRF via http.Get",
+          "severity": "HIGH",
+          "file": "examples/vuln-api/main.go",
+          "line": 62,
+          "column": 14,
+          "evidence": "http.Get(target) where target = r.FormValue(\"url\")",
+          "why_it_matters": "Сервер выполняет запросы к произвольным URL — доступ к internal-сервисам.",
+          "remediation": "Валидировать URL по whitelist разрешённых доменов."
+        },
+        "verdict": {
+          "label": "needs_review",
+          "confidence": 0.75,
+          "rationale": "http.Get вызывается с URL из запроса. Нет редиректов или фильтрации. Требует проверки контекста использования.",
+          "remediation": "Разрешённые хосты — whitelist. Запрещать private IP (169.254.x.x, 10.x.x.x, 192.168.x.x).",
+          "provider": "mock"
+        },
+        "snippet": "func fetchHandler(w http.ResponseWriter, r *http.Request) {\n\ttarget := r.FormValue(\"url\")\n\tresp, err := http.Get(target)"
+      },
+      {
+        "finding": {
+          "rule_id": "weak_hash",
+          "title": "Weak Hash Algorithm (MD5)",
+          "severity": "MEDIUM",
+          "file": "examples/vuln-api/main.go",
+          "line": 23,
+          "column": 4,
+          "evidence": "md5.New()",
+          "why_it_matters": "MD5 криптографически сломан и не подходит для хеширования паролей.",
+          "remediation": "Использовать bcrypt или argon2id для паролей."
+        },
+        "verdict": {
+          "label": "true_positive",
+          "confidence": 0.91,
+          "rationale": "MD5 используется для хеширования пароля. Это известная уязвимость — коллизии и radужные таблицы.",
+          "remediation": "golang.org/x/crypto/bcrypt с cost >= 12.",
+          "provider": "mock"
+        },
+        "snippet": "func hashPassword(password string) string {\n\th := md5.New()\n\th.Write([]byte(password))\n\treturn fmt.Sprintf(\"%x\", h.Sum(nil))\n}"
+      }
+    ],
+    "scan_metrics": {
+      "files_discovered": 3,
+      "files_scanned": 3,
+      "files_skipped": 0,
+      "scan_duration": 124000000
+    },
+    "agent_duration": 3800000000,
+    "stats": {
+      "total_findings": 5,
+      "ai_triaged_findings": 5,
+      "fallback_findings": 0,
+      "feedback_overrides": 0,
+      "true_positive_count": 4,
+      "false_positive_count": 0,
+      "needs_review_count": 1
+    }
+  }
+}

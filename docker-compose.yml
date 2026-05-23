@@ -1,0 +1,126 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: vulnscanner-mongo
+    command: ["mongod", "--bind_ip_all", "--setParameter", "diagnosticDataCollectionEnabled=false"]
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: vulnscanner-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    cpus: "4.0"
+    mem_limit: 12g
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: vulnscanner-ollama-init
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        set -eu
+        model="$${SAST_OLLAMA_MODEL:-qwen2.5:7b-instruct}"
+        echo "Pulling Ollama model: $${model}"
+        ollama pull "$${model}"
+        ollama list
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      SAST_OLLAMA_MODEL: ${SAST_OLLAMA_MODEL:-qwen2.5:7b-instruct}
+    volumes:
+      - ollama-data:/root/.ollama
+
+  vulnscanner-api:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CODEQL_VERSION: ${CODEQL_VERSION:-2.19.3}
+    image: vulnscanner:codeql
+    pull_policy: never
+    container_name: vulnscanner-api
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
+    ports:
+      - "${SAST_API_PORT:-10000}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:exec,size=8g
+      - /go-work:exec,size=2g,uid=10001,gid=10001,mode=1777
+      - /home/app/.codeql:size=1g,uid=10001,gid=10001,mode=700
+      - /run:size=32m
+    cpus: "4.0"
+    mem_limit: ${SAST_API_MEM_LIMIT:-8g}
+    environment:
+      SAST_SERVER_ADDR:      ${SAST_SERVER_ADDR:-:8080}
+      SAST_WORKERS:          ${SAST_WORKERS:-4}
+      SAST_INCLUDE_TESTS:    ${SAST_INCLUDE_TESTS:-false}
+      SAST_AI_PROVIDER:      ${SAST_AI_PROVIDER:-ollama-agentic}
+      SAST_OLLAMA_URL:       ${SAST_OLLAMA_URL:-http://ollama:11434}
+      SAST_OLLAMA_MODEL:     ${SAST_OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      SAST_OPENAI_KEY:       ${SAST_OPENAI_KEY:-}
+      SAST_GIGACHAT_KEY:     ${SAST_GIGACHAT_KEY:-}
+      SAST_OPENAI_MODEL:     ${SAST_OPENAI_MODEL:-gpt-4o-mini}
+      SAST_OPENAI_URL:       ${SAST_OPENAI_URL:-https://api.openai.com/v1}
+      SAST_GIGACHAT_SCOPE:   ${SAST_GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
+      SAST_SNIPPET_RADIUS:   ${SAST_SNIPPET_RADIUS:-14}
+      SAST_AI_BUDGET:        ${SAST_AI_BUDGET:-10}
+      SAST_FAIL_ON_SEVERITY: ${SAST_FAIL_ON_SEVERITY:-HIGH}
+      SAST_FAIL_ON_VERDICT:  ${SAST_FAIL_ON_VERDICT:-true_positive}
+      SAST_FEEDBACK_IN:      ${SAST_FEEDBACK_IN:-}
+      SAST_AI_PARALLEL:      ${SAST_AI_PARALLEL:-2}
+      SAST_MONGO_URI:        ${SAST_MONGO_URI:-mongodb://mongo:27017}
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "1"
+
+  vulnscanner-ui:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: vulnscanner-ui:local
+    pull_policy: never
+    container_name: vulnscanner-ui
+    restart: unless-stopped
+    depends_on:
+      vulnscanner-api:
+        condition: service_healthy
+    ports:
+      - "${SAST_UI_PORT:-10001}:80"
+
+volumes:
+  ollama-data:
+  mongo-data:

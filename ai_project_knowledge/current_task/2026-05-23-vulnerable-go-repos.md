@@ -1,0 +1,136 @@
+# Лог задачи: поиск репозиториев с уязвимым Go-кодом
+
+- 2026-05-23: запрос пользователя — найти хорошие GitHub-репозитории с уязвимым Go-кодом.
+- Прочитан `ai_project_knowledge/README.md` (обязательно).
+- Тематические файлы не открывались: задача про внешний список репозиториев, без необходимости внутреннего проектного контекста.
+- Выполнен веб-поиск и отбор практичных репозиториев для SAST-тестов.
+- 2026-05-23: Выполнен рефакторинг provider-слоя без изменения логики triage.
+  - Провайдеры вынесены в отдельные пакеты: `internal/agent/provider/{noop,ollama,openai,gigachat}`.
+  - В каждом пакете добавлены экспортируемые конструкторы, возвращающие `agent.TriageProvider` (`New`, `NewAgentic` где применимо).
+  - Общие части оставлены в родительском пакете `provider`: `LLMBackend`, `SingleProvider`, `AgenticProvider`, `prompt.go`, `parse.go`, `retry.go`.
+  - `internal/api/config.go` переведен на новые конструкторы подпакетов.
+  - Удалены дублирующие реализации из корня `provider`: `noop.go`, `ollama.go`, `openai.go`, `gigachat.go`.
+  - Проверка: `GOCACHE=$(pwd)/.tmp/gocache go test ./...` — успешно.
+- Кандидат на перенос в постоянную документацию: архитектурное правило — каждый AI-провайдер живет в собственном подпакете и отдает `agent.TriageProvider` через конструкторы.
+- 2026-05-23: Предсдачный проход на однородность конфигурации и интерфейсов.
+  - Поддержан явный ключ GigaChat: добавлено поле `GigaChatKey` в `internal/api/config.go`.
+  - Добавлен env `SAST_GIGACHAT_KEY` с совместимостью: fallback на legacy `SAST_OPENAI_KEY` сохранен.
+  - `buildProvider/checkProviderReady` для `gigachat*` переведены на `GigaChatKey`.
+  - `applyFormOverrides` поддерживает `gigachat_key`; `openai_key` оставлен для обратной совместимости.
+  - README/.env.example синхронизированы с новой (и legacy) схемой ключей.
+  - Проверки: `gofmt`, `GOCACHE=$(pwd)/.tmp/gocache go test ./...`, `go vet ./...` — успешно.
+- Кандидат на перенос в постоянную документацию: унифицирована схема cloud-ключей (OpenAI и GigaChat) с backward compatibility.
+- 2026-05-23: Унификация контейнерной конфигурации в один compose и один Dockerfile.
+  - Оставлен единый `Dockerfile` (включает CodeQL bundle); удален `Dockerfile.codeql`.
+  - Оставлен единый `docker-compose.yml` (full stack: mongo, ollama, ollama-init, api, ui); удален `docker-compose.server.yml`.
+  - В `docker-compose.yml` сохранены prod-параметры (`read_only`, `tmpfs`, healthchecks, resource limits) и единая сборка API через `Dockerfile`.
+  - `Dockerfile` выровнен под `go 1.24` (совместимость с go.mod).
+  - Обновлены ссылки/дефолты в `README.md`, `scripts/deploy-production.sh`, `examples/gitlab-ci.yml`, `docs/DOCUMENTATION.md`, `.github/workflows/deploy.yml`.
+  - Проверки: `docker compose config --quiet`, `GOCACHE=$(pwd)/.tmp/gocache go test ./...` — успешно.
+- Кандидат на перенос в постоянную документацию: в проекте поддерживается только единый контейнерный контур (`docker-compose.yml` + `Dockerfile`).
+- 2026-05-23: Диагностика недоступности UI после unified compose.
+  - Симптом: `vulnscanner-ui` в цикле рестарта.
+  - Причина: в `frontend/nginx.conf` upstream ссылался на несуществующий сервис `sast-agent-api:8080`.
+  - Фикс: upstream изменен на `vulnscanner-api:8080`.
+  - Проверка: `docker compose up -d --build vulnscanner-ui`, `docker compose ps`, `docker compose logs vulnscanner-ui` — UI контейнер в статусе Up, nginx стартует без ошибок.
+- Кандидат на перенос в постоянную документацию: при переименовании compose-сервисов нужно синхронно обновлять upstream в nginx фронтенда.
+- 2026-05-23: Точечный фикс CodeQL (без изменения остальной логики).
+  - Проблема 1: `go1.26.3: permission denied` из-за запуска скачанного toolchain на `noexec` tmpfs `/tmp`.
+    - Решение: перенесены Go-кэши в `/go-work` (`GOPATH`, `GOMODCACHE`, `GOCACHE`) и добавлен `tmpfs /go-work:exec`.
+    - Дополнительно: `/tmp` в compose оставлен как `exec` для совместимости с CodeQL/автобилдом.
+  - Проблема 2: `database analyze: exit status 2` с `Read-only file system` для `/home/app/.codeql/compile-cache`.
+    - Решение: добавлен `tmpfs /home/app/.codeql` c uid/gid `10001`.
+  - Проблема 3: `AccessDeniedException` при чтении precompiled QLX в `/opt/codeql/...`.
+    - Решение: в Dockerfile добавлен `RUN chmod -R a+rX /opt/codeql`.
+  - Проверка: повторный `POST /scan` на тестовом архиве (`go 1.26.3`) возвращает `HTTP 200`; в логах отсутствуют `permission denied`, `Read-only file system`, `codeql failed`, `database analyze: exit status 2`.
+- Кандидат на перенос в постоянную документацию: для read-only API контейнера CodeQL требует отдельные writable/exec tmpfs для cache/toolchain (`/go-work`, `/home/app/.codeql`).
+- 2026-05-23: Исправлен баг потери findings при ошибке AI triage.
+  - Причина: в `agent.Run` при `provider.Triage` error finding пропускался (`continue`), из-за чего итоговый отчет мог быть `0 findings/0 ai_triaged` и `PASS` даже при найденных CodeQL issues.
+  - Фикс: при triage error формируется fallback verdict `needs_review` с `rationale="AI triage failed: ..."`, finding остается в отчете; инкрементируется `stats.FallbackFindings`.
+  - `stats.AITriagedFindings` теперь считается только для успешных triage-вызовов.
+  - Проверка: `GOCACHE=$(pwd)/.tmp/gocache go test ./...` — успешно.
+- Кандидат на перенос в постоянную документацию: findings нельзя терять при сбое AI-слоя; обязательный fallback в `needs_review`.
+- 2026-05-23: Рефакторинг логирования на структурированный `log/slog`.
+  - Добавлен единый логгер `internal/logging/logger.go` с настройками через env:
+    - `SAST_LOG_LEVEL` (`debug|info|warn|error`, default `info`)
+    - `SAST_LOG_JSON=true|false` (default text)
+  - Переведены ключевые точки на структурированные логи:
+    - server startup/failure (`cmd/server/main.go`)
+    - API scan lifecycle sync/stream (`internal/api/server.go`)
+    - scan pipeline stages (`internal/api/upload.go`)
+    - triage errors/fallback (`internal/agent/agent.go`)
+    - CodeQL decision/fallback (`internal/scanner/scanner.go`)
+    - CodeQL stage progress + per-language errors (`internal/scanner/codeql.go`)
+  - Для долгих CodeQL-команд добавлен heartbeat прогресса каждые 15с (`runCodeQLStep`), чтобы в UI/SSE и в логах был живой прогресс.
+  - Проверка: `GOCACHE=$(pwd)/.tmp/gocache go test ./...` — успешно.
+- Кандидат на перенос в постоянную документацию: единый structured logging через `slog` + heartbeat для долгих CodeQL стадий.
+- 2026-05-23: Диагностика цепочки findings -> Ollama и фикс зависания перед triage.
+  - По логам подтверждено: запрос принимался с `provider=ollama-agentic`, CodeQL находил finding, но до triage/Ollama не доходило.
+  - Причина: после успешного CodeQL запускался merge с built-in scanner (`scanAllFiles`), который мог зависать/долго выполняться на `packages.Load`, блокируя переход к AI triage.
+  - Фикс: в `internal/scanner/scanner.go` добавлен таймаут merge-шагу built-in сканера (`scanAllFilesWithTimeout`, 45s).
+    - При таймауте merge: продолжаем с CodeQL findings (не блокируем triage).
+  - Проверка на тестовом архиве:
+    - API: `scan stage completed` и `scan pipeline finished` с `ai_triaged_findings=1`.
+    - Ollama: зафиксированы `POST /api/generate` (3 вызова для agentic-пайплайна).
+    - Ответ `/scan`: `findings_count=1`, `fallback_findings=0`.
+- Кандидат на перенос в постоянную документацию: merge CodeQL+builtin должен быть bounded по времени, чтобы не блокировать AI triage.
+- 2026-05-23: Доработка merge (CodeQL + builtin) и диагностика причины недохода до Ollama.
+  - Убрана стратегия "skip merge по внешнему таймауту"; merge снова выполняется по умолчанию.
+  - Добавлен bounded `go/packages` в builtin-сканировании:
+    - `scanPackages(..., timeout)` с `packages.Config.Context`.
+    - timeout настраивается через `SAST_PACKAGES_TIMEOUT_SEC` (default 45s).
+  - Добавлены детальные логи pipeline merge:
+    - `builtin scan started`
+    - `packages-based scan completed`
+    - `packages-based scan failed, falling back to file-level scan`
+    - `file-level scan completed`
+  - Диагностика по логам: в текущем кейсе `go/packages` падал с `no files processed via go/packages`, поэтому включался fallback на file-level scanner.
+  - Проверка после фикса:
+    - API лог показывает fallback и дальнейший `scan pipeline finished`.
+    - Ollama лог содержит `POST /api/generate` (agentic этапы), т.е. findings доходят до модели.
+- 2026-05-23: Найдена и исправлена первопричина деградации `go/packages`.
+  - Корень: `scanPackages` использовал `pkg.CompiledGoFiles`, но в `packages.Config.Mode` не был запрошен `NeedCompiledGoFiles`.
+  - В новых условиях это поле часто оставалось пустым, из-за чего пакеты отбрасывались и возникало `no files processed via go/packages`.
+  - Почему проявилось сейчас: latent-bug стал воспроизводимым после обновлений окружения/инструментов (контейнерный toolchain/поведение загрузчика), где `CompiledGoFiles` перестало заполняться "по удаче".
+  - Фикс:
+    - добавлен `packages.NeedCompiledGoFiles` в mode;
+    - добавлен fallback на `pkg.GoFiles`, если `CompiledGoFiles` пуст.
+  - Проверка: `go test ./...` — успешно.
+- 2026-05-23: По запросу пользователя переключен дефолт Ollama-модели на `qwen2.5:7b-instruct` (вариант 1).
+  - Обновлены дефолты: `internal/api/config.go`, `docker-compose.yml`, `.env.example`, `.github/workflows/deploy.yml`.
+  - Синхронизированы примеры в `README.md` и `docs/DOCUMENTATION.md`.
+  - Важно: `ollama pull` НЕ запускался (по явному требованию пользователя).
+  - Проверка: `go test ./...` — успешно.
+- 2026-05-23: Улучшено сообщение readiness-check для Ollama модели.
+  - `pingOllama` теперь возвращает actionable error:
+    - явная команда `ollama pull <model>`
+    - список уже доступных локальных моделей из `/api/tags`
+  - Цель: быстрее диагностировать ситуацию "дефолтная модель изменена, но не скачана".
+  - Проверка: `go test ./...` — успешно.
+- 2026-05-23: Исправлена деградация `mongo` (container unhealthy/restarting).
+  - Причина по логам: падение `mongod` в потоке FTDC (`FileStreamFailed` при записи `/data/db/diagnostic.data/metrics.interim.temp`), а не ошибка healthcheck.
+  - Фикс в `docker-compose.yml`: для сервиса `mongo` добавлен запуск с `--setParameter diagnosticDataCollectionEnabled=false`.
+  - Проверка: после `docker compose up -d mongo` контейнер `vulnscanner-mongo` перешел в `healthy`; `docker inspect ...State.Health` показывает `ExitCode: 0`.
+- Кандидат на перенос в постоянную документацию: для dev-стека допускается отключение FTDC в Mongo при сбоях записи diagnostic.data.
+- 2026-05-23: Доработан Go-охват сканера, чтобы findings приходили не только из встроенных `GO-*` AST-сигнатур.
+  - Прочитаны: `ai_project_knowledge/README.md`, `current_task/2026-05-20-sast-agent-upgrade.md`, `current_task/2026-05-22-c-sast-go-options.md`, затем конкретный лог текущего продолжения `current_task/2026-05-23-vulnerable-go-repos.md`.
+  - Найдено: `scanner.ScanWithOptions` уже вызывал `ScanWithGosec`, но реализации `IsGosecAvailable/ScanWithGosec` не было.
+  - Добавлен `internal/scanner/go_external.go`: адаптеры `gosec` и `govulncheck`, парсинг JSON в общий `Finding`, нормализация rule id в `GOSEC-*` и `GOVULN-*`.
+  - `ScanWithOptions` теперь дополнительно мерджит `govulncheck` findings после CodeQL/builtin/gosec.
+  - `Dockerfile` устанавливает и копирует в runtime `gosec` и `govulncheck`, чтобы внешний Go-анализ работал в API-контейнере.
+  - Добавлены тесты парсеров для gosec и govulncheck.
+  - Проверки: `GOCACHE=$(pwd)/.tmp/gocache go test ./...`, `GOCACHE=$(pwd)/.tmp/gocache go build ./...`, `GOCACHE=$(pwd)/.tmp/gocache go vet ./...`, `docker compose config --quiet` — успешно.
+- Кандидат на перенос в постоянную документацию: Go SAST pipeline теперь состоит из CodeQL + встроенных AST-правил + gosec + govulncheck; внешние findings сохраняются как `GOSEC-*`/`GOVULN-*`.
+- 2026-05-23: Доработан автопулл Ollama модели в prod/deploy контуре.
+  - Прочитаны: `ai_project_knowledge/README.md`, `current_task/2026-05-23-vulnerable-go-repos.md`.
+  - `docker-compose.yml`: `ollama-init` теперь явно логирует модель, выполняет `ollama pull "$SAST_OLLAMA_MODEL"` и `ollama list`; `SAST_OLLAMA_MODEL` передается в init-контейнер.
+  - `scripts/deploy-production.sh`: перед стартом полного стека поднимается `ollama`, удаляется старый one-shot `ollama-init`, затем `docker compose run --rm ollama-init` принудительно скачивает модель на каждом деплое.
+  - `README.md` и `.env.example` обновлены: указано, что ручной `ollama pull` не нужен; добавлен список GitHub Secrets/Variables для deploy workflow.
+  - Проверки: `bash -n scripts/deploy-production.sh`, `docker compose config --quiet` — успешно.
+- 2026-05-23: Внешние порты деплоя перенесены с `8080/8081` на настраиваемые порты.
+  - Прочитаны: `ai_project_knowledge/README.md`, `current_task/2026-05-23-vulnerable-go-repos.md`.
+  - `docker-compose.yml`: API публикуется как `${SAST_API_PORT:-10000}:8080`, UI как `${SAST_UI_PORT:-10001}:80`.
+  - `.github/workflows/deploy.yml`: deploy и smoke test используют GitHub Variables `SAST_API_PORT` и `SAST_UI_PORT` с default `10000/10001`.
+  - `scripts/deploy-production.sh`: healthcheck default теперь `http://localhost:${SAST_API_PORT}/healthz`.
+  - README, `.env.example`, `docs/DOCUMENTATION.md`, `examples/gitlab-ci.yml` синхронизированы с внешним API портом `10000`.
+  - Проверки: `docker compose config --quiet`, `bash -n scripts/deploy-production.sh` — успешно.

@@ -1,0 +1,28 @@
+# Version control
+.git
+
+# Build / IDE artefacts
+.cache
+.idea
+.tmp
+.artifacts
+sast-agent
+
+# Runtime data — never needed at build time
+scan-target
+.env
+.env.*
+*.log
+*.sarif
+feedback.json
+
+# Docs and examples — not part of the binary
+docs
+examples
+scripts
+ai_project_knowledge
+README.md
+AGENTS.md
+
+# GitHub / CI config
+.github

@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SAST-агент</title>
+<style>
+:root{--bg:#0f1117;--surface:#1a1d27;--border:#2d3148;--text:#e2e8f0;--muted:#8892a4;--accent:#6366f1;--accent-h:#818cf8;--danger:#ef4444;--success:#22c55e}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;line-height:1.5;min-height:100vh;padding:2rem 1.25rem}
+.main{max-width:860px;margin:0 auto}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:.5rem;padding:1.5rem;margin-bottom:1.25rem}
+.lbl{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:.75rem}
+/* Drop zone */
+.drop-zone{border:2px dashed var(--border);border-radius:.5rem;padding:2rem;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;margin-bottom:0}
+.drop-zone:hover,.drop-zone.over{border-color:var(--accent);background:rgba(99,102,241,.04)}
+.drop-zone input[type=file]{display:none}
+.drop-zone .icon{font-size:1.8rem;margin-bottom:.3rem}
+.drop-zone .hint{color:var(--muted);font-size:.82rem;margin-top:.25rem}
+.drop-zone .chosen{color:var(--accent);font-size:.88rem;margin-top:.4rem;font-weight:500}
+/* Mode toggle */
+.mode-row{display:flex;gap:.5rem;margin-bottom:1rem}
+.mode-btn{flex:1;padding:.55rem 1rem;background:var(--bg);border:1px solid var(--border);color:var(--muted);border-radius:.4rem;cursor:pointer;font-size:.9rem;font-weight:500;transition:all .18s;text-align:center}
+.mode-btn.active{background:rgba(99,102,241,.18);color:var(--accent);border-color:var(--accent)}
+/* Chips */
+.chips{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.9rem}
+.chip{padding:.3rem .8rem;background:var(--bg);border:1px solid var(--border);color:var(--muted);border-radius:2rem;cursor:pointer;font-size:.82rem;transition:all .18s;white-space:nowrap}
+.chip.active{background:rgba(99,102,241,.18);color:var(--accent);border-color:var(--accent)}
+/* Form fields */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.85rem;margin-bottom:.85rem}
+.fg label{display:block;font-size:.78rem;color:var(--muted);margin-bottom:.28rem}
+.fg .hint-lbl{font-size:.7rem;color:var(--muted);font-weight:400;margin-left:.3rem}
+.fg input,.fg select{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:.42rem .6rem;border-radius:.35rem;font-size:.88rem}
+.fg input:focus,.fg select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.full{grid-column:1/-1}
+/* Test button + status */
+.test-row{display:flex;align-items:center;gap:.75rem;margin-top:.25rem}
+.btn-test{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:.42rem 1rem;border-radius:.35rem;cursor:pointer;font-size:.86rem;transition:all .18s;white-space:nowrap}
+.btn-test:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.btn-test:disabled{opacity:.5;cursor:not-allowed}
+.test-ok{color:var(--success);font-size:.82rem}
+.test-err{color:var(--danger);font-size:.82rem}
+/* Separator */
+.sep{border:none;border-top:1px solid var(--border);margin:.85rem 0}
+/* Primary button */
+.btn{background:var(--accent);color:#fff;border:none;padding:.6rem 1.4rem;border-radius:.4rem;font-size:.95rem;cursor:pointer;font-weight:600;width:100%;transition:background .2s}
+.btn:hover:not(:disabled){background:var(--accent-h)}
+.btn:disabled{background:#2d3148;color:var(--muted);cursor:not-allowed}
+/* Spinner */
+.spinner{display:inline-block;width:.9rem;height:.9rem;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:spin .65s linear infinite;vertical-align:middle;margin-right:.4rem}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* Progress */
+.prog-status{font-size:.88rem;color:var(--muted);margin-bottom:.75rem}
+.prog-meta{display:flex;justify-content:space-between;font-size:.78rem;color:var(--muted);margin-bottom:.3rem}
+.prog-track{position:relative;height:.45rem;background:var(--border);border-radius:9999px;overflow:hidden;margin-bottom:.35rem}
+.prog-fill{height:100%;width:0%;background:var(--accent);border-radius:9999px;transition:width .35s ease}
+/* Indeterminate sliding block shown while the scanner is running */
+.prog-fill-scan{position:absolute;top:0;height:100%;width:30%;
+  background:linear-gradient(90deg,transparent,var(--accent),var(--accent-h),transparent);
+  border-radius:9999px;animation:scan-sweep 1.6s ease-in-out infinite alternate}
+@keyframes scan-sweep{from{left:-30%}to{left:100%}}
+.prog-current{font-size:.77rem;color:var(--muted);min-height:1.1em}
+.prog-elapsed{font-size:.77rem;color:var(--muted);font-variant-numeric:tabular-nums}
+/* Results */
+.banner{padding:.9rem 1.25rem;border-radius:.45rem;margin-bottom:1rem;font-size:1.05rem;font-weight:600}
+.banner.fail{background:rgba(239,68,68,.13);border:1px solid rgba(239,68,68,.35);color:var(--danger)}
+.banner.pass{background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.32);color:var(--success)}
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:.6rem;margin-bottom:1rem}
+.stat{background:var(--bg);border:1px solid var(--border);border-radius:.4rem;padding:.6rem .85rem}
+.stat .v{font-size:1.35rem;font-weight:700}
+.stat .l{font-size:.7rem;color:var(--muted);margin-top:.05rem}
+.findings{display:flex;flex-direction:column;gap:.6rem}
+.fi{background:var(--bg);border:1px solid var(--border);border-radius:.4rem;padding:.85rem 1rem}
+.fi.live{border-color:rgba(99,102,241,.3);animation:fadein .3s ease}
+@keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+.fi-head{display:flex;align-items:flex-start;gap:.4rem;flex-wrap:wrap;margin-bottom:.32rem}
+.fi-title{font-weight:600;font-size:.91rem;align-self:center}
+.fi-loc{font-size:.76rem;color:var(--muted);font-family:monospace}
+.fi-detail{font-size:.78rem;color:var(--muted);margin-top:.26rem}
+.fi-rat{font-size:.78rem;color:#a0aec0;margin-top:.3rem;font-style:italic;border-left:2px solid var(--border);padding-left:.6rem}
+.badge{font-size:.66rem;font-weight:700;padding:.1rem .4rem;border-radius:.2rem;text-transform:uppercase;white-space:nowrap}
+.bCRITICAL{background:rgba(239,68,68,.18);color:#ef4444;border:1px solid rgba(239,68,68,.4)}
+.bHIGH{background:rgba(249,115,22,.18);color:#f97316;border:1px solid rgba(249,115,22,.4)}
+.bMEDIUM{background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4)}
+.bLOW{background:rgba(99,102,241,.18);color:#818cf8;border:1px solid rgba(99,102,241,.4)}
+.bTP{background:rgba(239,68,68,.13);color:#ef4444;border:1px solid rgba(239,68,68,.3)}
+.bFP{background:rgba(34,197,94,.13);color:#22c55e;border:1px solid rgba(34,197,94,.3)}
+.bNR{background:rgba(245,158,11,.13);color:#f59e0b;border:1px solid rgba(245,158,11,.3)}
+.snippet{font-family:'Courier New',monospace;font-size:.74rem;background:rgba(0,0,0,.35);border:1px solid var(--border);border-radius:.3rem;padding:.45rem .7rem;overflow-x:auto;overflow-y:auto;color:#94a3b8;margin-top:.4rem;white-space:pre;max-height:160px;line-height:1.45}
+.err{background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.28);color:#f87171;border-radius:.4rem;padding:.7rem 1rem;font-size:.86rem}
+.metrics{font-size:.82rem;color:var(--muted);display:flex;gap:1.5rem;flex-wrap:wrap}
+.metrics b{color:var(--text)}
+#results{display:none}
+.hist-table{width:100%;border-collapse:collapse;font-size:.82rem}
+.hist-table th{text-align:left;color:var(--muted);font-weight:600;padding:.4rem .6rem;border-bottom:1px solid var(--border)}
+.hist-table td{padding:.45rem .6rem;border-bottom:1px solid rgba(45,49,72,.5);vertical-align:middle}
+.hist-table tr:hover td{background:rgba(99,102,241,.04);cursor:pointer}
+.hist-pass{color:var(--success);font-weight:600}
+.hist-fail{color:var(--danger);font-weight:600}
+</style>
+</head>
+<body>
+<div class="main">
+
+  <!-- АРХИВ -->
+  <div class="card">
+    <div class="lbl">Исходный архив</div>
+    <div class="drop-zone" id="dz">
+      <input type="file" id="fi" accept=".tar.gz,.tgz,.zip">
+      <div class="icon">&#128230;</div>
+      <div>Перетащите файл или <strong>нажмите для выбора</strong></div>
+      <div class="hint">Архив .tar.gz или .zip с исходным кодом Go-проекта</div>
+      <div class="chosen" id="fn"></div>
+    </div>
+  </div>
+
+  <!-- AI-ПРОВАЙДЕР -->
+  <div class="card">
+    <div class="lbl">Провайдер</div>
+
+    <div class="mode-row">
+      <div class="mode-btn active" id="btn-local" onclick="setMode('local')">🖥&nbsp;Локальный (Ollama)</div>
+      <div class="mode-btn" id="btn-cloud" onclick="setMode('cloud')">☁️&nbsp;Облачный (API)</div>
+    </div>
+
+    <!-- Локальный -->
+    <div id="local-section">
+      <div class="lbl" style="margin-bottom:.5rem">Режим анализа</div>
+      <div class="chips">
+        <div class="chip active" id="lc-agentic" onclick="setLocalMode('ollama-agentic')">Многошаговый</div>
+        <div class="chip" id="lc-single" onclick="setLocalMode('ollama')">Одношаговый</div>
+        <div class="chip" id="lc-noop" onclick="setLocalMode('noop')">Без AI</div>
+      </div>
+    </div>
+
+    <!-- Облачный -->
+    <div id="cloud-section" style="display:none">
+      <div class="lbl" style="margin-bottom:.5rem">Платформа</div>
+      <div class="chips" id="preset-chips">
+        <div class="chip active" onclick="setPreset('openai')">OpenAI</div>
+        <div class="chip" onclick="setPreset('gigachat')">GigaChat</div>
+        <div class="chip" onclick="setPreset('custom')">Свой (OpenAI-совместимый)</div>
+      </div>
+
+      <div class="grid">
+        <div class="fg">
+          <label>API-ключ <span class="hint-lbl" id="key-hint"></span></label>
+          <input type="password" id="cloud-key" autocomplete="off" placeholder="sk-...">
+        </div>
+        <div class="fg">
+          <label>Модель</label>
+          <input type="text" id="cloud-model" value="gpt-4o-mini" placeholder="gpt-4o-mini">
+        </div>
+        <!-- OpenAI / Custom: API URL -->
+        <div class="fg full" id="url-row">
+          <label>API URL <span class="hint-lbl">для Groq, Azure и других OpenAI-совместимых провайдеров</span></label>
+          <input type="text" id="cloud-url" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1">
+        </div>
+        <!-- GigaChat: Scope -->
+        <div class="fg" id="scope-row" style="display:none">
+          <label>Scope <span class="hint-lbl">developers.sber.ru/studio → Настройки API</span></label>
+          <select id="gigachat-scope">
+            <option value="GIGACHAT_API_PERS">GIGACHAT_API_PERS (личный)</option>
+            <option value="GIGACHAT_API_B2B">GIGACHAT_API_B2B (бизнес)</option>
+            <option value="GIGACHAT_API_CORP">GIGACHAT_API_CORP (корпоративный)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="lbl" style="margin-bottom:.5rem">Режим анализа</div>
+      <div class="chips">
+        <div class="chip active" id="cc-agentic" onclick="setCloudMode('agentic')">Многошаговый</div>
+        <div class="chip" id="cc-single" onclick="setCloudMode('single')">Одношаговый</div>
+      </div>
+
+      <hr class="sep">
+      <div class="test-row">
+        <button class="btn-test" id="testBtn" onclick="testProvider()">🔌 Проверить подключение</button>
+        <span id="test-status"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ПАРАМЕТРЫ -->
+  <div class="card">
+    <div class="lbl">Параметры сканирования</div>
+    <div class="grid">
+      <div class="fg">
+        <label>Лимит анализа <span class="hint-lbl" id="bud-hint">макс. находок для анализа</span></label>
+        <input type="number" id="bud" value="5" min="0" max="500"
+               oninput="onBudgetChange(this)"
+               placeholder="0 = без лимита">
+      </div>
+      <div class="fg">
+        <label>Блокировать при severity</label>
+        <select id="sev">
+          <option value="HIGH">HIGH</option>
+          <option value="CRITICAL">CRITICAL</option>
+          <option value="MEDIUM">MEDIUM</option>
+          <option value="LOW">LOW</option>
+        </select>
+      </div>
+      <div class="fg">
+        <label>Блокировать при вердикте</label>
+        <select id="verd">
+          <option value="true_positive">true_positive</option>
+          <option value="needs_review">needs_review</option>
+          <option value="any">любой</option>
+        </select>
+      </div>
+    </div>
+    <button class="btn" id="scanBtn" onclick="runScan()">Запустить сканирование</button>
+  </div>
+
+  <!-- ПРОГРЕСС -->
+  <div class="card" id="prog-card" style="display:none">
+    <div class="prog-status" id="prog-status"><span class="spinner"></span>Подготовка…</div>
+    <div id="prog-bar-wrap" style="display:none">
+      <div class="prog-meta">
+        <span id="prog-label">Анализ находок…</span>
+        <span id="prog-pct" class="prog-elapsed"></span>
+      </div>
+      <div class="prog-track">
+        <!-- determinate bar (analysis phase) -->
+        <div class="prog-fill" id="prog-fill"></div>
+        <!-- indeterminate animated bar (file scanning phase) -->
+        <div class="prog-fill-scan" id="prog-fill-scan" style="display:none"></div>
+      </div>
+      <div class="prog-current" id="prog-current"></div>
+    </div>
+    <div id="live-list" class="findings" style="margin-top:.75rem"></div>
+  </div>
+
+  <!-- Reconnect banner (shown when pending job detected on reload) -->
+  <div id="reconnect-banner" class="card" style="display:none;border-color:rgba(99,102,241,.4)">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem">
+      <div>
+        <div style="font-weight:600;font-size:.95rem">&#9881;&#65039; Сканирование выполняется в фоне</div>
+        <div style="font-size:.82rem;color:var(--muted);margin-top:.2rem">Вы закрыли вкладку — результат сохранится. Можно переподключиться.</div>
+      </div>
+      <div style="display:flex;gap:.5rem">
+        <button class="btn" style="width:auto;padding:.45rem 1rem;font-size:.85rem" onclick="reconnectJob()">Переподключиться</button>
+        <button class="btn-test" onclick="dismissReconnect()">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="results"></div>
+
+  <!-- ИСТОРИЯ СКАНИРОВАНИЙ -->
+  <div class="card" style="margin-top:1.5rem">
+    <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleHistory()">
+      <div class="lbl" style="margin:0">История сканирований</div>
+      <span id="hist-chevron" style="color:var(--muted);font-size:1rem">▼</span>
+    </div>
+    <div id="hist-panel" style="display:none;margin-top:1rem">
+      <div id="hist-list"><div style="color:var(--muted);font-size:.85rem">Загрузка…</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────
+let mode = 'local';         // 'local' | 'cloud'
+let localProv = 'ollama-agentic';
+let cloudMode = 'agentic';  // 'agentic' | 'single'
+let currentPreset = 'openai';
+
+const PRESETS = {
+  openai:   { url:'https://api.openai.com/v1', model:'gpt-4o-mini', keyHint:'platform.openai.com/api-keys', keyPh:'sk-...',  showUrl:true  },
+  gigachat: { url:'',                          model:'GigaChat',    keyHint:'Authorization key → developers.sber.ru/studio', keyPh:'base64-ключ…', showUrl:false },
+  custom:   { url:'',                          model:'',            keyHint:'Любой OpenAI-совместимый провайдер', keyPh:'...', showUrl:true  },
+};
+
+// ── Drop zone ──────────────────────────────────────────────────────────
+const dz=document.getElementById('dz'),fi=document.getElementById('fi'),fn=document.getElementById('fn');
+dz.addEventListener('click',()=>fi.click());
+fi.addEventListener('change',()=>{if(fi.files[0])fn.textContent=fi.files[0].name;});
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('over');});
+dz.addEventListener('dragleave',()=>dz.classList.remove('over'));
+dz.addEventListener('drop',e=>{
+  e.preventDefault();dz.classList.remove('over');
+  if(e.dataTransfer.files[0]){
+    const dt=new DataTransfer();dt.items.add(e.dataTransfer.files[0]);
+    fi.files=dt.files;fn.textContent=fi.files[0].name;
+  }
+});
+
+// ── Provider mode ──────────────────────────────────────────────────────
+function setMode(m) {
+  mode = m;
+  ['local','cloud'].forEach(x=>{
+    document.getElementById('btn-'+x).classList.toggle('active', x===m);
+    document.getElementById(x+'-section').style.display = x===m ? 'block' : 'none';
+  });
+  document.getElementById('test-status').textContent = '';
+}
+
+function setLocalMode(p) {
+  localProv = p;
+  ['lc-agentic','lc-single','lc-noop'].forEach(id=>document.getElementById(id).classList.remove('active'));
+  const map = {'ollama-agentic':'lc-agentic','ollama':'lc-single','noop':'lc-noop'};
+  if(map[p]) document.getElementById(map[p]).classList.add('active');
+}
+
+function setCloudMode(m) {
+  cloudMode = m;
+  document.getElementById('cc-agentic').classList.toggle('active', m==='agentic');
+  document.getElementById('cc-single').classList.toggle('active', m==='single');
+}
+
+function setPreset(name) {
+  currentPreset = name;
+  const presetNames = Object.keys(PRESETS);
+  document.querySelectorAll('#preset-chips .chip').forEach((el,i)=>{
+    el.classList.toggle('active', presetNames[i]===name);
+  });
+  const p = PRESETS[name];
+  if(p.url)   document.getElementById('cloud-url').value   = p.url;
+  if(p.model) document.getElementById('cloud-model').value = p.model;
+  document.getElementById('cloud-key').placeholder = p.keyPh;
+  document.getElementById('key-hint').textContent  = p.keyHint;
+  document.getElementById('test-status').textContent = '';
+  document.getElementById('url-row').style.display   = p.showUrl ? '' : 'none';
+  document.getElementById('scope-row').style.display = p.showUrl ? 'none' : '';
+}
+
+// ── Compute active provider name ───────────────────────────────────────
+function getProvider() {
+  if(mode==='local') return localProv;
+  if(currentPreset==='gigachat') return cloudMode==='agentic' ? 'gigachat-agentic' : 'gigachat';
+  return cloudMode==='agentic' ? 'openai-agentic' : 'openai';
+}
+
+// ── Test connection ────────────────────────────────────────────────────
+async function testProvider() {
+  const btn = document.getElementById('testBtn');
+  const st  = document.getElementById('test-status');
+  btn.disabled = true;
+  st.className = '';
+  st.innerHTML = '<span style="color:var(--muted);font-size:.82rem"><span class="spinner" style="border-top-color:var(--muted)"></span>Проверка…</span>';
+
+  const params = new URLSearchParams();
+  params.set('provider', getProvider());
+  if(mode === 'cloud') {
+    params.set('openai_key',   document.getElementById('cloud-key').value.trim());
+    params.set('openai_model', document.getElementById('cloud-model').value.trim());
+    if(currentPreset==='gigachat') {
+      params.set('gigachat_scope', document.getElementById('gigachat-scope').value);
+    } else {
+      params.set('openai_url', document.getElementById('cloud-url').value.trim());
+    }
+  }
+
+  try {
+    const r = await fetch('/provider/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: params.toString(),
+    });
+    const d = await r.json();
+    if(d.ok) {
+      st.className = 'test-ok';
+      st.textContent = '✓ ' + d.message + ' (' + d.latency_ms + 'мс)';
+    } else {
+      st.className = 'test-err';
+      st.textContent = '✗ ' + d.message;
+    }
+  } catch(e) {
+    st.className = 'test-err';
+    st.textContent = '✗ ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Append cloud fields to FormData ───────────────────────────────────
+function appendCloudFields(fd) {
+  if(mode==='cloud') {
+    const key = document.getElementById('cloud-key').value.trim();
+    if(key) fd.append('openai_key', key);
+    fd.append('openai_model', document.getElementById('cloud-model').value.trim());
+    if(currentPreset==='gigachat') {
+      fd.append('gigachat_scope', document.getElementById('gigachat-scope').value);
+    } else {
+      fd.append('openai_url', document.getElementById('cloud-url').value.trim());
+    }
+  }
+}
+
+// ── Elapsed timer ─────────────────────────────────────────────────────
+let scanTotal  = 0;
+let elapsedSec = 0;
+let elapsedTmr = null;
+
+function startElapsed() {
+  elapsedSec = 0;
+  clearInterval(elapsedTmr);
+  elapsedTmr = setInterval(() => {
+    elapsedSec++;
+    const m = Math.floor(elapsedSec / 60);
+    const s = String(elapsedSec % 60).padStart(2,'0');
+    const el = document.getElementById('prog-pct');
+    if(el) el.textContent = m > 0 ? m+':'+s : s+'с';
+  }, 1000);
+}
+
+function stopElapsed() {
+  clearInterval(elapsedTmr);
+  elapsedTmr = null;
+}
+
+function showScanningBar() {
+  document.getElementById('prog-bar-wrap').style.display = 'block';
+  document.getElementById('prog-fill').style.width = '0';
+  document.getElementById('prog-fill-scan').style.display = 'block';
+  document.getElementById('prog-label').textContent = 'Сканирование кода…';
+  document.getElementById('prog-pct').textContent = '0с';
+  document.getElementById('prog-current').textContent = '';
+}
+
+function switchToDeterminate() {
+  document.getElementById('prog-fill-scan').style.display = 'none';
+  document.getElementById('prog-fill').style.width = '0';
+  stopElapsed();
+}
+
+// ── Scan ───────────────────────────────────────────────────────────────
+async function runScan() {
+  const file = fi.files[0];
+  if(!file){alert('Сначала выберите архив .tar.gz или .zip.');return;}
+  if(mode==='cloud'){
+    const key = document.getElementById('cloud-key').value.trim();
+    if(!key){alert('Укажите API-ключ для облачного провайдера.');return;}
+  }
+  const btn = document.getElementById('scanBtn');
+  btn.disabled = true;
+  const progCard = document.getElementById('prog-card');
+  document.getElementById('prog-bar-wrap').style.display = 'none';
+  document.getElementById('prog-fill-scan').style.display = 'none';
+  document.getElementById('prog-fill').style.width = '0';
+  document.getElementById('live-list').innerHTML = '';
+  document.getElementById('results').style.display = 'none';
+  stopElapsed();
+  setProgStatus('<span class="spinner"></span>Загрузка и распаковка архива…');
+  progCard.style.display = 'block';
+  progCard.scrollIntoView({behavior:'smooth'});
+  startElapsed();
+  showScanningBar();
+
+  const fd = new FormData();
+  fd.append('archive',            file);
+  fd.append('provider',           getProvider());
+  fd.append('ai_budget',          document.getElementById('bud').value);
+  fd.append('fail_on_severity',   document.getElementById('sev').value);
+  fd.append('fail_on_verdict',    document.getElementById('verd').value);
+  appendCloudFields(fd);
+
+  try {
+    const resp = await fetch('/scan/stream', {method:'POST', body:fd});
+    if(!resp.ok){
+      const txt = await resp.text();
+      showError('Ошибка '+resp.status, txt.trim());
+      return;
+    }
+    await readSSE(resp);
+  } catch(e) {
+    stopElapsed();
+    showError('Ошибка запроса', e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Job persistence ────────────────────────────────────────────────────────
+const JOB_KEY = 'vulnscanner_pending_job';
+function saveJob(id) { sessionStorage.setItem(JOB_KEY, id); }
+function clearJob()  { sessionStorage.removeItem(JOB_KEY); }
+function savedJob()  { return sessionStorage.getItem(JOB_KEY); }
+
+function checkPendingJob() {
+  if(savedJob()) document.getElementById('reconnect-banner').style.display = 'block';
+}
+
+function dismissReconnect() {
+  clearJob();
+  document.getElementById('reconnect-banner').style.display = 'none';
+}
+
+async function reconnectJob() {
+  const id = savedJob();
+  if(!id) return;
+  document.getElementById('reconnect-banner').style.display = 'none';
+  const btn = document.getElementById('scanBtn');
+  btn.disabled = true;
+  const progCard = document.getElementById('prog-card');
+  document.getElementById('prog-bar-wrap').style.display = 'none';
+  document.getElementById('prog-fill-scan').style.display = 'none';
+  document.getElementById('live-list').innerHTML = '';
+  document.getElementById('results').style.display = 'none';
+  stopElapsed(); startElapsed(); showScanningBar();
+  setProgStatus('<span class="spinner"></span>Переподключение к фоновому сканированию…');
+  progCard.style.display = 'block';
+  progCard.scrollIntoView({behavior:'smooth'});
+  try {
+    const resp = await fetch('/jobs/'+id+'/stream');
+    if(!resp.ok){ clearJob(); showError('Задача не найдена','ID: '+id+'. Проверьте историю.'); return; }
+    await readSSE(resp);
+  } catch(e) {
+    stopElapsed(); showError('Ошибка переподключения', e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── SSE reader ─────────────────────────────────────────────────────────
+async function readSSE(resp) {
+  const reader = resp.body.getReader();
+  const dec    = new TextDecoder();
+  let buf = '';
+  while(true) {
+    const {done,value} = await reader.read();
+    if(done) break;
+    buf += dec.decode(value,{stream:true});
+    const parts = buf.split('\n\n');
+    buf = parts.pop();
+    for(const part of parts) {
+      if(part.startsWith('data: ')) {
+        try{handleEvent(JSON.parse(part.slice(6)));}catch(_){}
+      }
+    }
+  }
+}
+
+function handleEvent(ev) {
+  switch(ev.type) {
+    case 'job_id':
+      saveJob(ev.id);
+      break;
+    case 'scanning':
+      setProgStatus('<span class="spinner"></span>Сканирование исходных файлов…');
+      break;
+    case 'codeql_status':
+      setProgStatus('<span class="spinner"></span>CodeQL SAST в процессе…');
+      document.getElementById('prog-current').textContent = esc(ev.message);
+      break;
+    case 'start': {
+      switchToDeterminate();
+      const total = ev.total || 0;
+      if(total > 0) {
+        setBar(0, total, '');
+        setProgStatus(
+          `Найдено <b>${ev.total}</b> ${plural(ev.total,'находка','находки','находок')} `+
+          `в <b>${ev.files_scanned}</b> файлах. Запуск анализа…`);
+      } else {
+        document.getElementById('prog-bar-wrap').style.display = 'none';
+        setProgStatus(
+          `Просканировано <b>${ev.files_scanned}</b> файлов — находок нет.`);
+      }
+      break;
+    }
+    case 'progress':
+      setBar(ev.current, ev.total, esc(ev.title) + ' (' + esc(ev.severity) + ')');
+      addLiveFinding(ev);
+      break;
+    case 'done':
+      stopElapsed();
+      clearJob();
+      document.getElementById('prog-card').style.display = 'none';
+      renderFinal(ev.result);
+      // Refresh history if the panel is open
+      histLoaded = false;
+      if(document.getElementById('hist-panel').style.display !== 'none') {
+        loadHistory();
+        histLoaded = true;
+      }
+      break;
+    case 'error':
+      stopElapsed();
+      clearJob();
+      showError('Ошибка сканирования', ev.message || 'Неизвестная ошибка');
+      break;
+  }
+}
+
+function plural(n, one, few, many) {
+  const v = Math.abs(n) % 100;
+  const v1 = v % 10;
+  if(v > 10 && v < 20) return many;
+  if(v1 === 1) return one;
+  if(v1 >= 2 && v1 <= 4) return few;
+  return many;
+}
+
+// ── Progress helpers ───────────────────────────────────────────────────
+function setProgStatus(html){document.getElementById('prog-status').innerHTML=html;}
+
+function setBar(current,total,label){
+  const pct = total>0?Math.round(current/total*100):100;
+  document.getElementById('prog-fill').style.width = pct+'%';
+  document.getElementById('prog-pct').textContent  = pct+'%';
+  document.getElementById('prog-label').textContent = `Проанализировано ${current} / ${total} находок`;
+  document.getElementById('prog-current').textContent = label ? 'Сейчас: '+label : '';
+  setProgStatus('<span class="spinner"></span>Анализ в процессе…');
+}
+
+function addLiveFinding(ev) {
+  const vc = {'true_positive':'bTP','false_positive':'bFP','needs_review':'bNR'}[ev.verdict]||'';
+  const pct = ev.confidence!=null ? Math.round(ev.confidence*100)+'%' : '';
+  const el = document.createElement('div');
+  el.className = 'fi live';
+  el.innerHTML =
+    '<div class="fi-head">'
+    +(ev.severity?'<span class="badge b'+ev.severity+'">'+ev.severity+'</span>':'')
+    +(ev.verdict?'<span class="badge '+vc+'">'+verdictRu(ev.verdict)+'</span>':'')
+    +(pct?'<span style="font-size:.73rem;color:var(--muted);align-self:center">'+pct+'</span>':'')
+    +'<span class="fi-title">'+esc(ev.title||ev.rule_id||'')+'</span>'
+    +'</div>'
+    +(ev.rationale?'<div class="fi-rat">'+esc(ev.rationale)+'</div>':'')
+    +(ev.remediation?'<div class="fi-detail" style="margin-top:.25rem">Исправление: '+esc(ev.remediation)+'</div>':'')
+    +(ev.snippet?'<pre class="snippet">'+esc(ev.snippet)+'</pre>':'');
+  document.getElementById('live-list').appendChild(el);
+}
+
+// ── Final results ──────────────────────────────────────────────────────
+function renderFinal(data) {
+  const rpt=data.report||{},st=rpt.stats||{},fs=rpt.findings||[],m=rpt.scan_metrics||{};
+  let h = '';
+  h += '<div class="banner '+(data.should_fail?'fail':'pass')+'">';
+  h += data.should_fail ? '&#128680; FAIL — требует устранения' : '&#9989; PASS — критичных уязвимостей не найдено';
+  h += '</div>';
+  h += '<div class="stats">';
+  for(const[l,v] of[['Всего',st.total_findings||0],['Проверено',st.ai_triaged_findings||0],
+      ['Реальные',st.true_positive_count||0],['На проверку',st.needs_review_count||0],
+      ['Ложные',st.false_positive_count||0],['Переопр.',st.feedback_overrides||0]])
+    h += '<div class="stat"><div class="v">'+v+'</div><div class="l">'+l+'</div></div>';
+  h += '</div>';
+  const dur = rpt.agent_duration ? (rpt.agent_duration/1e9).toFixed(1)+'с' : '--';
+  h += '<div class="card"><div class="metrics">'
+    +'<span>Файлов просканировано: <b>'+(m.files_scanned||0)+'</b></span>'
+    +'<span>Файлов обнаружено: <b>'+(m.files_discovered||0)+'</b></span>'
+    +'<span>Время анализа: <b>'+dur+'</b></span>'
+    +'</div></div>';
+  if(fs.length===0) {
+    h += '<div class="card" style="text-align:center;color:var(--muted);padding:1.5rem">Находок не обнаружено.</div>';
+  } else {
+    h += '<div class="card"><div class="lbl">Все находки ('+fs.length+')</div><div class="findings">';
+    for(const item of fs) {
+      const f=item.finding||{},v=item.verdict||{};
+      const sf = f.file?(f.file.split('/').pop()):'-';
+      const vc = {'true_positive':'bTP','false_positive':'bFP','needs_review':'bNR'}[v.label]||'';
+      h += '<div class="fi"><div class="fi-head">';
+      if(f.severity) h += '<span class="badge b'+f.severity+'">'+f.severity+'</span>';
+      if(v.label)    h += '<span class="badge '+vc+'">'+verdictRu(v.label)+'</span>';
+      if(v.confidence!=null) h += '<span style="font-size:.73rem;color:var(--muted);align-self:center">'+Math.round(v.confidence*100)+'%</span>';
+      h += '<span class="fi-title">'+esc(f.title||f.rule_id||'')+'</span></div>';
+      h += '<div class="fi-loc">'+esc(sf)+':'+(f.line||'?')+'&nbsp;&middot;&nbsp;'+esc(f.rule_id||'')+'</div>';
+      if(f.evidence)   h += '<div class="fi-detail">Свидетельство: '+esc(f.evidence)+'</div>';
+      if(v.rationale)  h += '<div class="fi-rat">'+esc(v.rationale)+'</div>';
+      if(v.remediation)h += '<div class="fi-detail" style="margin-top:.28rem">Исправление: '+esc(v.remediation)+'</div>';
+      if(item.snippet) h += '<pre class="snippet">'+esc(item.snippet)+'</pre>';
+      h += '</div>';
+    }
+    h += '</div></div>';
+  }
+  const res = document.getElementById('results');
+  res.innerHTML = h;
+  res.style.display = 'block';
+  res.scrollIntoView({behavior:'smooth'});
+}
+
+function showError(title, msg) {
+  document.getElementById('prog-card').style.display = 'none';
+  const res = document.getElementById('results');
+  res.innerHTML = '<div class="err"><b>'+esc(title)+'</b><pre style="margin-top:.45rem;white-space:pre-wrap;font-size:.78rem">'+esc(msg)+'</pre></div>';
+  res.style.display = 'block';
+  res.scrollIntoView({behavior:'smooth'});
+}
+
+function verdictRu(v){
+  return{'true_positive':'реальная','false_positive':'ложная','needs_review':'на проверку'}[v]||v;
+}
+
+function esc(s){
+  if(s==null)return'';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Init
+setPreset('openai');
+checkPendingJob();
+
+function onBudgetChange(input) {
+  const hint = document.getElementById('bud-hint');
+  const v = parseInt(input.value, 10);
+  if(isNaN(v) || v === 0) {
+    hint.textContent = '— все находки';
+    hint.style.color = 'var(--accent)';
+    input.style.color = 'var(--accent)';
+  } else {
+    hint.textContent = 'макс. находок для анализа';
+    hint.style.color = '';
+    input.style.color = '';
+  }
+}
+onBudgetChange(document.getElementById('bud'));
+
+// ── History ────────────────────────────────────────────────────────────
+let histLoaded = false;
+
+async function toggleHistory() {
+  const panel = document.getElementById('hist-panel');
+  const chev  = document.getElementById('hist-chevron');
+  const open  = panel.style.display === 'none';
+  panel.style.display = open ? 'block' : 'none';
+  chev.textContent    = open ? '▲' : '▼';
+  if(open && !histLoaded) {
+    await loadHistory();
+    histLoaded = true;
+  }
+}
+
+async function loadHistory() {
+  const el = document.getElementById('hist-list');
+  try {
+    const r = await fetch('/history');
+    const list = await r.json();
+    if(!list || list.length === 0) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:.85rem">Нет записей. История появится после первого сканирования.</div>';
+      return;
+    }
+    let h = '<table class="hist-table"><thead><tr>'
+      + '<th>Дата</th><th>Архив</th><th>Провайдер</th><th>Результат</th>'
+      + '<th>Всего</th><th>Проверено</th><th>Реальные</th></tr></thead><tbody>';
+    for(const s of list) {
+      const dt = new Date(s.timestamp).toLocaleString('ru');
+      const res = s.should_fail
+        ? '<span class="hist-fail">FAIL</span>'
+        : '<span class="hist-pass">PASS</span>';
+      const st = s.stats || {};
+      h += `<tr onclick="loadHistoryItem('${esc(s.id)}')">`
+        + `<td>${esc(dt)}</td>`
+        + `<td>${esc(s.archive_name||'—')}</td>`
+        + `<td style="color:var(--muted)">${esc((s.provider||'').split(':')[0])}</td>`
+        + `<td>${res}</td>`
+        + `<td>${st.total_findings||0}</td>`
+        + `<td>${st.ai_triaged_findings||0}</td>`
+        + `<td>${st.true_positive_count||0}</td>`
+        + '</tr>';
+    }
+    h += '</tbody></table>';
+    el.innerHTML = h;
+  } catch(e) {
+    el.innerHTML = '<div class="err">Не удалось загрузить историю: '+esc(e.message)+'</div>';
+  }
+}
+
+async function loadHistoryItem(id) {
+  try {
+    const r = await fetch('/history/'+id);
+    const rec = await r.json();
+    if(!rec) return;
+    // rec.report is scanResponse { should_fail, report: agent.Report }
+    // rec.report.report is agent.Report { findings, stats, scan_metrics, agent_duration }
+    const scanResp = rec.report || {};
+    const agentReport = scanResp.report || scanResp;
+    const result = {
+      should_fail: scanResp.should_fail != null ? scanResp.should_fail : rec.should_fail,
+      report: agentReport,
+    };
+    document.getElementById('results').style.display = 'none';
+    renderFinal(result);
+    document.getElementById('results').scrollIntoView({behavior:'smooth'});
+  } catch(e) {
+    alert('Не удалось загрузить запись: ' + e.message);
+  }
+}
+</script>
+</body>
+</html>

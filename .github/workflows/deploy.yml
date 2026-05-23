@@ -1,0 +1,108 @@
+name: Deploy to production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan \
+            -H "${{ secrets.DEPLOY_HOST }}" \
+            >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pack repository
+        run: |
+          tar -czf /tmp/deploy.tar.gz \
+            --exclude='.git' \
+            --exclude='.idea' \
+            --exclude='.tmp' \
+            --exclude='.artifacts' \
+            --exclude='.cache' \
+            --exclude='scan-target' \
+            --exclude='examples/vuln-api' \
+            --exclude='examples/vulnerable' \
+            .
+          echo "Archive size: $(du -sh /tmp/deploy.tar.gz | cut -f1)"
+
+      - name: Upload to server
+        run: |
+          scp -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            /tmp/deploy.tar.gz \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/deploy.tar.gz"
+
+      - name: Deploy
+        env:
+          DEPLOY_HOST:  ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER:  ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH:  ${{ vars.DEPLOY_PATH || '/opt/sast-agent' }}
+          GIT_SHA:      ${{ github.sha }}
+          OLLAMA_MODEL: ${{ vars.SAST_OLLAMA_MODEL || 'qwen2.5:7b-instruct' }}
+          AI_PROVIDER:  ${{ vars.SAST_AI_PROVIDER || 'ollama-agentic' }}
+          API_PORT:     ${{ vars.SAST_API_PORT || '10000' }}
+          UI_PORT:      ${{ vars.SAST_UI_PORT || '10001' }}
+        run: |
+          ssh -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=10 \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "DEPLOY_PATH='${DEPLOY_PATH}' \
+             GIT_SHA='${GIT_SHA}' \
+             SAST_OLLAMA_MODEL='${OLLAMA_MODEL}' \
+             SAST_AI_PROVIDER='${AI_PROVIDER}' \
+             SAST_API_PORT='${API_PORT}' \
+             SAST_UI_PORT='${UI_PORT}' \
+             bash -s" << 'ENDSSH'
+          set -euo pipefail
+
+          RELEASE_DIR="${DEPLOY_PATH}/releases/${GIT_SHA}"
+          mkdir -p "${RELEASE_DIR}"
+          tar -xzf /tmp/deploy.tar.gz -C "${RELEASE_DIR}"
+          rm /tmp/deploy.tar.gz
+
+          # Atomic symlink swap
+          ln -snf "${RELEASE_DIR}" "${DEPLOY_PATH}/current"
+
+          cd "${DEPLOY_PATH}/current"
+
+          export SAST_OLLAMA_MODEL="${SAST_OLLAMA_MODEL}"
+          export SAST_AI_PROVIDER="${SAST_AI_PROVIDER}"
+          export SAST_API_PORT="${SAST_API_PORT}"
+          export SAST_UI_PORT="${SAST_UI_PORT}"
+
+          bash scripts/deploy-production.sh
+
+          # Keep only the 5 most recent releases
+          ls -1dt "${DEPLOY_PATH}/releases"/*/  \
+            | tail -n +6 \
+            | xargs rm -rf 2>/dev/null || true
+          ENDSSH
+
+      - name: Smoke test
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          SAST_API_PORT: ${{ vars.SAST_API_PORT || '10000' }}
+          SAST_UI_PORT: ${{ vars.SAST_UI_PORT || '10001' }}
+        run: |
+          sleep 5
+          curl -sf "http://${DEPLOY_HOST}:${SAST_API_PORT}/healthz" \
+            | grep -q '"status":"ok"'
+          echo "✅ Production deployment successful"
+          echo "   Web UI: http://${DEPLOY_HOST}:${SAST_UI_PORT}"
+          echo "   API:    http://${DEPLOY_HOST}:${SAST_API_PORT}"
