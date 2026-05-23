@@ -98,12 +98,15 @@ jobs:
       - name: Smoke test
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           SAST_API_PORT: ${{ vars.SAST_API_PORT || '10000' }}
           SAST_UI_PORT: ${{ vars.SAST_UI_PORT || '10001' }}
         run: |
-          sleep 5
-          curl -sf "http://${DEPLOY_HOST}:${SAST_API_PORT}/healthz" \
-            | grep -q '"status":"ok"'
+          ssh -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "curl -sf http://localhost:${SAST_API_PORT}/healthz | grep -q '\"status\":\"ok\"'"
           echo "✅ Production deployment successful"
           echo "   Web UI: http://${DEPLOY_HOST}:${SAST_UI_PORT}"
           echo "   API:    http://${DEPLOY_HOST}:${SAST_API_PORT}"
