@@ -133,7 +133,9 @@ func (srv *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rep, shouldFail, err := runScan(r.Context(), localCfg, findGoRoot(tmpDir), nil)
+	scanCtx, scanCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer scanCancel()
+	rep, shouldFail, err := runScan(scanCtx, localCfg, findGoRoot(tmpDir), nil)
 	if err != nil {
 		logging.L().Error("scan failed", "mode", "sync", "provider", localCfg.AIProvider, "err", err)
 		http.Error(w, fmt.Sprintf("scan failed: %v", err), http.StatusInternalServerError)
