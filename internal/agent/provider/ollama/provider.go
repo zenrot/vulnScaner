@@ -34,7 +34,7 @@ func (b *Backend) Name() string { return "ollama:" + b.Model }
 func (b *Backend) Complete(ctx context.Context, prompt string, jsonMode bool) (string, error) {
 	client := b.client
 	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Minute}
+		client = &http.Client{Timeout: 10 * time.Minute}
 	}
 	url := b.BaseURL
 	if url == "" {
