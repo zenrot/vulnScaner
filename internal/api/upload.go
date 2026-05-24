@@ -237,10 +237,14 @@ func runScan(ctx context.Context, cfg Config, path string, onEvent func(map[stri
 		logging.L().Error("scan stage failed", "stage", "load_feedback", "err", err)
 		return agent.Report{}, false, err
 	}
+	parallelism := cfg.AIParallel
+	if strings.HasPrefix(cfg.AIProvider, "gigachat") {
+		parallelism = 1
+	}
 	r, err := agent.Run(ctx, scanRes, provider, feedback, agent.RunOptions{
 		AIBudget:      cfg.AIBudget,
 		SnippetRadius: cfg.SnippetRadius,
-		Parallelism:   cfg.AIParallel,
+		Parallelism:   parallelism,
 		OnProgress: func(e agent.ProgressEvent) {
 			if onEvent != nil {
 				onEvent(map[string]any{
