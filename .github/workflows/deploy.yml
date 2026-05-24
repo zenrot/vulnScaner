@@ -51,7 +51,7 @@ jobs:
           DEPLOY_USER:  ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH:  ${{ vars.DEPLOY_PATH || '/opt/sast-agent' }}
           GIT_SHA:      ${{ github.sha }}
-          OLLAMA_MODEL: ${{ vars.SAST_OLLAMA_MODEL || 'qwen2.5:7b-instruct' }}
+          OLLAMA_MODEL: ${{ vars.SAST_OLLAMA_MODEL || 'qwen2.5:3b-instruct' }}
           AI_PROVIDER:  ${{ vars.SAST_AI_PROVIDER || 'ollama-agentic' }}
           API_PORT:     ${{ vars.SAST_API_PORT || '10000' }}
           UI_PORT:      ${{ vars.SAST_UI_PORT || '10001' }}
