@@ -6,7 +6,7 @@ Go-проект: AI-агент для статического анализа б
 
 1. **Scanner** запускает три уровня анализа последовательно, результаты дедуплицируются:
    - **CodeQL** (если доступен) — межпроцедурный taint-анализ
-   - **Builtin** — `go/packages + ast/inspector`, taint-lite, встроенные правила; если `go.mod` отсутствует, создаётся временный
+   - **Builtin** — `go/packages + ast/inspector`, taint-lite, 20 декларативных правил (`rule.go`); если `go.mod` отсутствует, создаётся временный
    - **gosec / govulncheck** (если доступны в `$PATH`) — внешние Go security scanners
 2. **Rule engine** формирует findings (severity, evidence, remediation).
 3. **AI triage** присваивает каждому finding verdict: `true_positive | false_positive | needs_review`.

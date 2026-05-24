@@ -6,58 +6,38 @@ import (
 	"testing"
 )
 
-func TestScanFindsRepresentativeIssues(t *testing.T) {
-	dir := t.TempDir()
-	source := `package main
-
-import (
-	"crypto/md5"
-	"crypto/tls"
-	"math/rand"
-	"net/http"
-	"os"
-	"os/exec"
-)
-
-const apiToken = "hardcoded-token-value"
-
-func main() {
-	_ = md5.New()
-	_ = rand.Int()
-	_ = http.ListenAndServe(":8080", nil)
-	_ = exec.Command("sh", "-c", "echo unsafe")
-	_ = os.Chmod("secret.txt", 0777)
-	_ = &tls.Config{InsecureSkipVerify: true}
+func TestBuiltinRulesFixtures(t *testing.T) {
+	for _, rule := range BuiltinRules {
+		rule := rule
+		if rule.Fixture == "" {
+			continue
+		}
+		t.Run(rule.ID, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(rule.Fixture), 0600); err != nil {
+				t.Fatal(err)
+			}
+			findings, err := Scan(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range findings {
+				if f.RuleID == rule.ID {
+					return
+				}
+			}
+			t.Fatalf("rule %s: fixture did not trigger finding; got %v", rule.ID, ruleIDs(findings))
+		})
+	}
 }
-`
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(source), 0600); err != nil {
-		t.Fatal(err)
-	}
 
-	findings, err := Scan(dir)
-	if err != nil {
-		t.Fatal(err)
+func ruleIDs(findings []Finding) []string {
+	ids := make([]string, len(findings))
+	for i, f := range findings {
+		ids[i] = f.RuleID
 	}
-
-	want := map[string]bool{
-		"GO-HARDCODED-SECRET": false,
-		"GO-CRYPTO-WEAK":      false,
-		"GO-RAND-INSECURE":    false,
-		"GO-HTTP-NO-TLS":      false,
-		"GO-CMD-SHELL":        false,
-		"GO-FILE-PERMISSIVE":  false,
-		"GO-TLS-SKIP-VERIFY":  false,
-	}
-	for _, finding := range findings {
-		if _, ok := want[finding.RuleID]; ok {
-			want[finding.RuleID] = true
-		}
-	}
-	for ruleID, found := range want {
-		if !found {
-			t.Fatalf("expected finding %s; got %#v", ruleID, findings)
-		}
-	}
+	return ids
 }
 
 func TestScanSkipsVendor(t *testing.T) {
@@ -67,7 +47,7 @@ func TestScanSkipsVendor(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := `package example
-const password = "hardcoded-password"
+const password = "hardcoded-password-value"
 `
 	if err := os.WriteFile(filepath.Join(vendor, "main.go"), []byte(source), 0600); err != nil {
 		t.Fatal(err)
@@ -85,7 +65,7 @@ const password = "hardcoded-password"
 func TestIncrementalSkipsUnchangedFiles(t *testing.T) {
 	dir := t.TempDir()
 	source := `package main
-const password = "hardcoded-password"
+const password = "hardcoded-password-value"
 `
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(source), 0600); err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	goparser "go/parser"
 	"go/token"
 	"io/fs"
 	"os"
@@ -101,7 +102,7 @@ func ScanWithOptions(root string, opts Options) (Result, error) {
 
 	codeqlLimit := opts.CodeQLMaxFiles
 	if codeqlLimit <= 0 {
-		codeqlLimit = 2000 // default: CodeQL for projects up to 2 000 files
+		codeqlLimit = 2000
 	}
 
 	var findings []Finding
@@ -228,6 +229,8 @@ func scanAllFiles(root string, selected []string, workers int) ([]Finding, error
 	if err != nil {
 		return nil, err
 	}
+	importFindings := applyImportRules(selected)
+	findings = append(findings, importFindings...)
 	logging.L().Info("builtin scan completed",
 		"selected_files", len(selected),
 		"findings", len(findings),
@@ -301,6 +304,8 @@ func scanPackages(root string, selected []string, timeout time.Duration) ([]Find
 		selectedSet[abs] = struct{}{}
 	}
 
+	ruleIdx := buildRuleIndex(BuiltinRules)
+
 	var findings []Finding
 	for _, pkg := range pkgs {
 		filePaths := pkg.CompiledGoFiles
@@ -341,13 +346,13 @@ func scanPackages(root string, selected []string, timeout time.Duration) ([]Find
 			add := adderFor(pkg.Fset, abs, &findings)
 			switch n := node.(type) {
 			case *ast.CallExpr:
-				checkCall(n, importMaps[idx], add)
+				applyCallRules(n, importMaps[idx], ruleIdx, add)
 			case *ast.CompositeLit:
-				checkComposite(n, add)
+				applyCompositeBoolRules(n, ruleIdx, add)
 			case *ast.ValueSpec:
-				checkValueSpec(n, add)
+				applyValueSpecSecretRules(n, ruleIdx.secretValue, add)
 			case *ast.AssignStmt:
-				checkAssignStmt(n, add)
+				applyAssignSecretRules(n, ruleIdx.secretValue, add)
 			}
 		})
 
@@ -374,7 +379,9 @@ func owningFile(files []*ast.File, start, end token.Pos) *ast.File {
 	return nil
 }
 
-func adderFor(fset *token.FileSet, absPath string, out *[]Finding) func(token.Pos, string, string, Severity, string, string, string) {
+type adderFn = func(token.Pos, string, string, Severity, string, string, string)
+
+func adderFor(fset *token.FileSet, absPath string, out *[]Finding) adderFn {
 	return func(pos token.Pos, ruleID, title string, severity Severity, evidence, why, remediation string) {
 		position := fset.Position(pos)
 		*out = append(*out, Finding{
@@ -391,68 +398,224 @@ func adderFor(fset *token.FileSet, absPath string, out *[]Finding) func(token.Po
 	}
 }
 
-func collectFiles(root string, opts Options) ([]string, error) {
-	if opts.ChangedOnly {
-		return changedSourceFiles(root, opts.IncludeTests)
-	}
-	var files []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", "vendor", "node_modules", "bin", "dist", "build":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if isSupportedSourceFile(path, opts.IncludeTests) {
-			files = append(files, path)
-		}
-		return nil
-	})
-	return files, err
+type rulesByType struct {
+	call          []Rule
+	callPkg       []Rule
+	callShell     []Rule
+	callChmod     []Rule
+	compositeBool []Rule
+	secretValue   []Rule
 }
 
-func isSupportedSourceFile(path string, includeTests bool) bool {
-	base := filepath.Base(path)
-	if !strings.HasSuffix(base, ".go") {
+func buildRuleIndex(rules []Rule) rulesByType {
+	var idx rulesByType
+	for _, r := range rules {
+		switch r.Match.Type {
+		case MatchCall:
+			idx.call = append(idx.call, r)
+		case MatchCallPkg:
+			idx.callPkg = append(idx.callPkg, r)
+		case MatchCallShell:
+			idx.callShell = append(idx.callShell, r)
+		case MatchCallPermissiveChmod:
+			idx.callChmod = append(idx.callChmod, r)
+		case MatchCompositeFieldBool:
+			idx.compositeBool = append(idx.compositeBool, r)
+		case MatchSecretValue:
+			idx.secretValue = append(idx.secretValue, r)
+		}
+	}
+	return idx
+}
+
+func applyCallRules(call *ast.CallExpr, imports map[string]string, idx rulesByType, add adderFn) {
+	pkg, fn := selector(call.Fun)
+	importPath := imports[pkg]
+	fullName := importPath + "." + fn
+
+	for _, rule := range idx.call {
+		for _, f := range rule.Match.Functions {
+			if fullName == f {
+				add(call.Pos(), rule.ID, rule.Title, rule.Severity, fullName, rule.Why, rule.Remediation)
+				break
+			}
+		}
+	}
+
+	if importPath != "" {
+		for _, rule := range idx.callPkg {
+			if importPath == rule.Match.Package {
+				add(call.Pos(), rule.ID, rule.Title, rule.Severity, pkg+"."+fn, rule.Why, rule.Remediation)
+			}
+		}
+	}
+
+	for _, rule := range idx.callShell {
+		if importPath == "os/exec" && fn == "Command" && invokesShell(call.Args) {
+			add(call.Pos(), rule.ID, rule.Title, rule.Severity, "exec.Command invoking a shell", rule.Why, rule.Remediation)
+		}
+	}
+
+	for _, rule := range idx.callChmod {
+		if importPath == "os" && fn == "Chmod" && len(call.Args) >= 2 && isPermissiveMode(call.Args[1]) {
+			add(call.Pos(), rule.ID, rule.Title, rule.Severity, "os.Chmod with broad permissions", rule.Why, rule.Remediation)
+		}
+	}
+}
+
+func applyCompositeBoolRules(lit *ast.CompositeLit, idx rulesByType, add adderFn) {
+	typeName := selectorString(lit.Type)
+	for _, rule := range idx.compositeBool {
+		if typeName != rule.Match.TypeSelector {
+			continue
+		}
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := kv.Key.(*ast.Ident)
+			if !ok || key.Name != rule.Match.Field {
+				continue
+			}
+			value, ok := kv.Value.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			expected := "false"
+			if rule.Match.BoolValue {
+				expected = "true"
+			}
+			if value.Name == expected {
+				add(kv.Pos(), rule.ID, rule.Title, rule.Severity,
+					rule.Match.Field+": "+expected, rule.Why, rule.Remediation)
+			}
+		}
+	}
+}
+
+func applyValueSpecSecretRules(spec *ast.ValueSpec, rules []Rule, add adderFn) {
+	for i, name := range spec.Names {
+		if i >= len(spec.Values) {
+			continue
+		}
+		applySecretCheck(name, spec.Values[i], spec.Pos(), rules, add)
+	}
+}
+
+func applyAssignSecretRules(stmt *ast.AssignStmt, rules []Rule, add adderFn) {
+	for i, lhs := range stmt.Lhs {
+		name, ok := lhs.(*ast.Ident)
+		if !ok || i >= len(stmt.Rhs) {
+			continue
+		}
+		applySecretCheck(name, stmt.Rhs[i], stmt.Pos(), rules, add)
+	}
+}
+
+func applySecretCheck(name *ast.Ident, val ast.Expr, pos token.Pos, rules []Rule, add adderFn) {
+	lit, ok := val.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return
+	}
+	str, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return
+	}
+	for _, rule := range rules {
+		if isSecretName(name.Name, rule.Match.NamePatterns) && isSecretStringValue(str, rule.Match.MinLength) {
+			add(pos, rule.ID, rule.Title, rule.Severity, name.Name, rule.Why, rule.Remediation)
+		}
+	}
+}
+
+func isSecretName(name string, patterns []string) bool {
+	lower := strings.ToLower(name)
+	matched := false
+	for _, p := range patterns {
+		if strings.Contains(lower, p) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
 		return false
 	}
-	return includeTests || !strings.HasSuffix(base, "_test.go")
+	for _, suffix := range []string{
+		"controller", "handler", "manager", "cleaner", "signer",
+		"publisher", "collector", "reconciler", "watcher", "listener",
+		"provider", "builder", "factory", "registry",
+	} {
+		if strings.HasSuffix(lower, suffix) {
+			return false
+		}
+	}
+	return true
 }
 
-func changedSourceFiles(root string, includeTests bool) ([]string, error) {
-	cmd := exec.Command("git", "-C", root, "diff", "--name-only", "--diff-filter=ACMR", "HEAD")
-	out, err := cmd.Output()
-	if err != nil {
-		cmd = exec.Command("git", "-C", root, "ls-files", "-m", "-o", "--exclude-standard")
-		out, err = cmd.Output()
+func isSecretStringValue(s string, minLen int) bool {
+	if strings.Contains(s, "-----BEGIN") {
+		return true
+	}
+	return len(s) >= minLen
+}
+
+func applyImportRules(files []string) []Finding {
+	var importRules []Rule
+	for _, r := range BuiltinRules {
+		if r.Match.Type == MatchImport {
+			importRules = append(importRules, r)
+		}
+	}
+	if len(importRules) == 0 {
+		return nil
+	}
+	fset := token.NewFileSet()
+	var findings []Finding
+	for _, path := range files {
+		f, err := goparser.ParseFile(fset, path, nil, goparser.ImportsOnly)
 		if err != nil {
-			return nil, fmt.Errorf("failed to collect changed files from git: %w", err)
-		}
-	}
-	lines := strings.Split(string(out), "\n")
-	files := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
 			continue
 		}
-		abs := filepath.Join(root, trimmed)
-		if !isSupportedSourceFile(abs, includeTests) {
-			continue
-		}
-		if _, err := os.Stat(abs); err == nil {
-			files = append(files, abs)
+		for _, imp := range f.Imports {
+			impPath, err := strconv.Unquote(imp.Path.Value)
+			if err != nil {
+				continue
+			}
+			for _, rule := range importRules {
+				if importMatchesRule(impPath, rule) {
+					pos := fset.Position(imp.Pos())
+					findings = append(findings, Finding{
+						RuleID:       rule.ID,
+						Title:        rule.Title,
+						Severity:     rule.Severity,
+						File:         path,
+						Line:         pos.Line,
+						Column:       pos.Column,
+						Evidence:     impPath,
+						WhyItMatters: rule.Why,
+						Remediation:  rule.Remediation,
+					})
+				}
+			}
 		}
 	}
-	return files, nil
+	return findings
 }
 
+func importMatchesRule(importPath string, rule Rule) bool {
+	if len(rule.Match.Packages) > 0 {
+		for _, p := range rule.Match.Packages {
+			if importPath == p {
+				return true
+			}
+		}
+		return false
+	}
+	return importPath == rule.Match.Package
+}
 
-func checkTaintLite(file *ast.File, imports map[string]string, add func(token.Pos, string, string, Severity, string, string, string)) {
+func checkTaintLite(file *ast.File, imports map[string]string, add adderFn) {
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -482,15 +645,13 @@ func checkTaintLite(file *ast.File, imports map[string]string, add func(token.Po
 				}
 			case *ast.CallExpr:
 				checkTaintSink(n, imports, tainted, add)
-				checkUnsafeDeserialize(n, imports, add)
-				checkInsecureTempFile(n, imports, add)
 			}
 			return true
 		})
 	}
 }
 
-func checkTaintSink(call *ast.CallExpr, imports map[string]string, tainted map[string]bool, add func(token.Pos, string, string, Severity, string, string, string)) {
+func checkTaintSink(call *ast.CallExpr, imports map[string]string, tainted map[string]bool, add adderFn) {
 	pkg, fn := selector(call.Fun)
 	importPath := imports[pkg]
 	fullName := importPath + "." + fn
@@ -511,27 +672,6 @@ func checkTaintSink(call *ast.CallExpr, imports map[string]string, tainted map[s
 		add(call.Pos(), "GO-PATH-TRAVERSAL-TAINT", "Potential path traversal via tainted path", SeverityHigh, "tainted data reaches file path sink",
 			"Untrusted path segments can escape intended directories and expose sensitive files.",
 			"Use filepath.Clean plus prefix checks against a fixed base directory, and reject traversal patterns.")
-	}
-}
-
-func checkUnsafeDeserialize(call *ast.CallExpr, imports map[string]string, add func(token.Pos, string, string, Severity, string, string, string)) {
-	pkg, fn := selector(call.Fun)
-	importPath := imports[pkg]
-	fullName := importPath + "." + fn
-	if fullName == "encoding/gob.Decode" || fullName == "gopkg.in/yaml.v2.Unmarshal" || fullName == "gopkg.in/yaml.v3.Unmarshal" {
-		add(call.Pos(), "GO-DESERIALIZE-UNTRUSTED", "Potential unsafe deserialization", SeverityMedium, fullName,
-			"Decoding untrusted payloads into complex objects can trigger unsafe states or abuse business logic paths.",
-			"Treat decoded data as untrusted, validate schema/fields explicitly, and minimize accepted types.")
-	}
-}
-
-func checkInsecureTempFile(call *ast.CallExpr, imports map[string]string, add func(token.Pos, string, string, Severity, string, string, string)) {
-	pkg, fn := selector(call.Fun)
-	importPath := imports[pkg]
-	if (importPath == "io/ioutil" && fn == "TempFile") || (importPath == "os" && fn == "CreateTemp") {
-		add(call.Pos(), "GO-TEMPFILE-REVIEW", "Temp file usage requires security review", SeverityLow, importPath+"."+fn,
-			"Temporary files can leak data when created in shared locations or with overly broad access controls.",
-			"Prefer restrictive permissions, avoid sensitive content in temp files, and ensure cleanup is guaranteed.")
 	}
 }
 
@@ -604,89 +744,6 @@ func importAliases(file *ast.File) map[string]string {
 	return imports
 }
 
-func checkCall(call *ast.CallExpr, imports map[string]string, add func(token.Pos, string, string, Severity, string, string, string)) {
-	pkg, fn := selector(call.Fun)
-	importPath := imports[pkg]
-	fullName := importPath + "." + fn
-
-	switch fullName {
-	case "crypto/md5.New", "crypto/sha1.New", "crypto/des.NewCipher", "crypto/rc4.NewCipher":
-		add(call.Pos(), "GO-CRYPTO-WEAK", "Weak cryptographic primitive", SeverityHigh, fullName,
-			"Weak or broken cryptographic primitives can enable collision, downgrade, or confidentiality attacks.",
-			"Use modern primitives such as SHA-256/SHA-512 for hashing needs or AES-GCM/ChaCha20-Poly1305 for encryption.")
-	case "net/http.ListenAndServe":
-		add(call.Pos(), "GO-HTTP-NO-TLS", "HTTP server without TLS", SeverityMedium, fullName,
-			"Plain HTTP can expose credentials, session tokens, and sensitive application data in transit.",
-			"Terminate TLS at a trusted proxy or use ListenAndServeTLS when the service is directly exposed.")
-	}
-
-	if importPath == "math/rand" && strings.HasPrefix(fn, "Int") {
-		add(call.Pos(), "GO-RAND-INSECURE", "Potentially insecure random source", SeverityMedium, pkg+"."+fn,
-			"math/rand is deterministic and is not suitable for tokens, secrets, nonces, or security decisions.",
-			"Use crypto/rand for security-sensitive randomness.")
-	}
-
-	if importPath == "os" && fn == "Chmod" && len(call.Args) >= 2 && isPermissiveMode(call.Args[1]) {
-		add(call.Pos(), "GO-FILE-PERMISSIVE", "Permissive file permissions", SeverityMedium, "os.Chmod with broad permissions",
-			"World-writable or broadly readable files can leak or allow modification of sensitive data.",
-			"Use the narrowest permissions possible, commonly 0600 for secrets and 0644 or less for public read-only files.")
-	}
-
-	if importPath == "os/exec" && fn == "Command" && invokesShell(call.Args) {
-		add(call.Pos(), "GO-CMD-SHELL", "Shell command execution", SeverityHigh, "exec.Command invoking a shell",
-			"Passing dynamic data through a shell creates command injection risk.",
-			"Call the target executable directly with structured arguments and validate any user-controlled values.")
-	}
-}
-
-func checkComposite(lit *ast.CompositeLit, add func(token.Pos, string, string, Severity, string, string, string)) {
-	if selectorString(lit.Type) != "tls.Config" {
-		return
-	}
-	for _, elt := range lit.Elts {
-		kv, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			continue
-		}
-		key, ok := kv.Key.(*ast.Ident)
-		if !ok || key.Name != "InsecureSkipVerify" {
-			continue
-		}
-		if value, ok := kv.Value.(*ast.Ident); ok && value.Name == "true" {
-			add(kv.Pos(), "GO-TLS-SKIP-VERIFY", "TLS certificate verification disabled", SeverityHigh, "InsecureSkipVerify: true",
-				"Disabling certificate verification allows man-in-the-middle attacks.",
-				"Keep certificate verification enabled and configure trusted roots or server names explicitly.")
-		}
-	}
-}
-
-func checkValueSpec(spec *ast.ValueSpec, add func(token.Pos, string, string, Severity, string, string, string)) {
-	for i, name := range spec.Names {
-		if !secretLike(name.Name) || i >= len(spec.Values) {
-			continue
-		}
-		if lit, ok := spec.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING && secretValueLike(lit.Value) {
-			add(spec.Pos(), "GO-HARDCODED-SECRET", "Hardcoded secret-like value", SeverityHigh, name.Name,
-				"Secrets committed to source control are difficult to rotate and can be recovered from history.",
-				"Load secrets from a secret manager, environment, or runtime configuration outside version control.")
-		}
-	}
-}
-
-func checkAssignStmt(stmt *ast.AssignStmt, add func(token.Pos, string, string, Severity, string, string, string)) {
-	for i, lhs := range stmt.Lhs {
-		name, ok := lhs.(*ast.Ident)
-		if !ok || !secretLike(name.Name) || i >= len(stmt.Rhs) {
-			continue
-		}
-		if lit, ok := stmt.Rhs[i].(*ast.BasicLit); ok && lit.Kind == token.STRING && secretValueLike(lit.Value) {
-			add(stmt.Pos(), "GO-HARDCODED-SECRET", "Hardcoded secret-like value", SeverityHigh, name.Name,
-				"Secrets committed to source control are difficult to rotate and can be recovered from history.",
-				"Load secrets from a secret manager, environment, or runtime configuration outside version control.")
-		}
-	}
-}
-
 func selector(expr ast.Expr) (string, string) {
 	sel, ok := expr.(*ast.SelectorExpr)
 	if !ok {
@@ -749,41 +806,64 @@ func isPermissiveMode(expr ast.Expr) bool {
 	return value&0002 != 0 || value == 0777 || value == 0666
 }
 
-func secretLike(name string) bool {
-	lower := strings.ToLower(name)
-	keywords := []string{"password", "passwd", "secret", "token", "apikey", "api_key", "privatekey", "private_key"}
-	matched := false
-	for _, keyword := range keywords {
-		if strings.Contains(lower, keyword) {
-			matched = true
-			break
+func collectFiles(root string, opts Options) ([]string, error) {
+	if opts.ChangedOnly {
+		return changedSourceFiles(root, opts.IncludeTests)
+	}
+	var files []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-	}
-	if !matched {
-		return false
-	}
-	nonsecret := []string{
-		"controller", "handler", "manager", "cleaner", "signer",
-		"publisher", "collector", "reconciler", "watcher", "listener",
-		"provider", "builder", "factory", "registry",
-	}
-	for _, suffix := range nonsecret {
-		if strings.HasSuffix(lower, suffix) {
-			return false
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "node_modules", "bin", "dist", "build":
+				return filepath.SkipDir
+			}
+			return nil
 		}
-	}
-	return true
+		if isSupportedSourceFile(path, opts.IncludeTests) {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files, err
 }
 
-func secretValueLike(raw string) bool {
-	value, err := strconv.Unquote(raw)
-	if err != nil {
+func isSupportedSourceFile(path string, includeTests bool) bool {
+	base := filepath.Base(path)
+	if !strings.HasSuffix(base, ".go") {
 		return false
 	}
-	if strings.Contains(value, "-----BEGIN") {
-		return true
+	return includeTests || !strings.HasSuffix(base, "_test.go")
+}
+
+func changedSourceFiles(root string, includeTests bool) ([]string, error) {
+	cmd := exec.Command("git", "-C", root, "diff", "--name-only", "--diff-filter=ACMR", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		cmd = exec.Command("git", "-C", root, "ls-files", "-m", "-o", "--exclude-standard")
+		out, err = cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("failed to collect changed files from git: %w", err)
+		}
 	}
-	return len(value) >= 16
+	lines := strings.Split(string(out), "\n")
+	files := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		abs := filepath.Join(root, trimmed)
+		if !isSupportedSourceFile(abs, includeTests) {
+			continue
+		}
+		if _, err := os.Stat(abs); err == nil {
+			files = append(files, abs)
+		}
+	}
+	return files, nil
 }
 
 func fileHash(path string) (string, error) {

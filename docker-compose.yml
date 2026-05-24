@@ -42,13 +42,13 @@ services:
       - -lc
       - |
         set -eu
-        model="$${SAST_OLLAMA_MODEL:-qwen2.5:7b-instruct}"
+        model="$${SAST_OLLAMA_MODEL:-qwen2.5:3b-instruct}"
         echo "Pulling Ollama model: $${model}"
         ollama pull "$${model}"
         ollama list
     environment:
       OLLAMA_HOST: http://ollama:11434
-      SAST_OLLAMA_MODEL: ${SAST_OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      SAST_OLLAMA_MODEL: ${SAST_OLLAMA_MODEL:-qwen2.5:3b-instruct}
     volumes:
       - ollama-data:/root/.ollama
 
@@ -92,7 +92,8 @@ services:
       SAST_INCLUDE_TESTS:    ${SAST_INCLUDE_TESTS:-false}
       SAST_AI_PROVIDER:      ${SAST_AI_PROVIDER:-ollama-agentic}
       SAST_OLLAMA_URL:       ${SAST_OLLAMA_URL:-http://ollama:11434}
-      SAST_OLLAMA_MODEL:     ${SAST_OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      SAST_OLLAMA_MODEL:     ${SAST_OLLAMA_MODEL:-qwen2.5:3b-instruct}
+      SAST_OLLAMA_NUM_CTX:   ${SAST_OLLAMA_NUM_CTX:-4096}
       SAST_OPENAI_KEY:       ${SAST_OPENAI_KEY:-}
       SAST_GIGACHAT_KEY:     ${SAST_GIGACHAT_KEY:-}
       SAST_OPENAI_MODEL:     ${SAST_OPENAI_MODEL:-gpt-4o-mini}

@@ -211,24 +211,46 @@ ScanWithOptions(root, opts)
 
 `ensureGoMod` создаёт временный `go.mod` (`module scan-target`, `go 1.21`) если в корне проекта его нет, и удаляет после завершения скана. Это позволяет анализировать любые Go-архивы без заранее созданного модуля.
 
-`scanPackages` запускает `go/packages` с `GOPROXY=off`, `GOFLAGS=-mod=mod` — загрузка внешних зависимостей не выполняется. Затем `ast/inspector` обходит AST по типам узлов (`CallExpr`, `CompositeLit`, `ValueSpec`, `AssignStmt`).
+**Архитектура**: правила объявлены в `internal/scanner/rule.go` как срез `BuiltinRules []Rule`. Движок сканирования в `scanner.go` — универсальный: он читает правила при старте, индексирует по типу паттерна и применяет к каждому AST-узлу. Добавление нового правила = одна новая запись в срезе, без изменения логики обхода.
+
+**Типы паттернов**:
+- `call` — точное совпадение `importPath.FuncName`
+- `call_pkg` — любой вызов функции из пакета
+- `call_shell` — `exec.Command` с шелл-бинарём и флагом `-c`
+- `call_permissive_chmod` — `os.Chmod` с широкими правами
+- `composite_field_bool` — поле структурного литерала равно `true`/`false`
+- `secret_value` — имя переменной совпадает с паттерном + длинная строка
+- `import` — сам факт импорта пакета (проверяется через `go/parser`, не требует разрешения зависимостей)
+
+`scanPackages` запускает `go/packages` с `GOPROXY=off`, `GOWORK=off` — загрузка внешних зависимостей не выполняется. `ast/inspector` обходит узлы (`CallExpr`, `CompositeLit`, `ValueSpec`, `AssignStmt`). Импорт-правила применяются отдельным проходом через `go/parser.ParseFile(ImportsOnly)`.
 
 **Правила**:
 
-| Rule ID | Описание | Severity |
-|---------|----------|----------|
-| GO-HARDCODED-SECRET | `const`/`var` с именем-секретом + значение ≥ 16 символов или PEM-блок; имена с суффиксами `Controller`/`Handler`/`Manager`/`Provider` и др. исключены | HIGH |
-| GO-CMD-SHELL | `exec.Command("sh"/"bash", "-c", …)` | HIGH |
-| GO-TLS-SKIP-VERIFY | `InsecureSkipVerify: true` | HIGH |
-| GO-CRYPTO-WEAK | `crypto/md5`, `crypto/sha1`, `des`, `rc4` | HIGH |
-| GO-RAND-INSECURE | `math/rand` | MEDIUM |
-| GO-HTTP-NO-TLS | `http.ListenAndServe` | MEDIUM |
-| GO-FILE-PERMISSIVE | `os.Chmod` с `0777`/`0666` | MEDIUM |
-| GO-DESERIALIZE-UNTRUSTED | `gob.Decode`, `yaml.Unmarshal` | MEDIUM |
-| GO-TEMPFILE-REVIEW | `os.CreateTemp`, `ioutil.TempFile` | LOW |
-| GO-CMD-INJECTION-TAINT | taint: ввод пользователя → `exec.Command` | HIGH |
-| GO-SSRF-TAINT | taint: ввод → `http.Get/Post` | HIGH |
-| GO-PATH-TRAVERSAL-TAINT | taint: ввод → `os.Open/ReadFile` | HIGH |
+| Rule ID | Паттерн | Описание | Severity |
+|---------|---------|----------|----------|
+| GO-HARDCODED-SECRET | `secret_value` | `const`/`var` с именем-секретом + значение ≥ 16 символов или PEM-блок | HIGH |
+| GO-CRYPTO-WEAK | `call` | `crypto/md5`, `crypto/sha1`, `crypto/des`, `crypto/rc4` | HIGH |
+| GO-CMD-SHELL | `call_shell` | `exec.Command("sh"/"bash", "-c", …)` | HIGH |
+| GO-TLS-SKIP-VERIFY | `composite_field_bool` | `tls.Config{InsecureSkipVerify: true}` | HIGH |
+| GO-XSS-UNSAFE-CAST | `call` | `html/template.HTML/JS/URL/Attr/CSS(...)` — обход XSS-экранирования | HIGH |
+| GO-EXEC-SYSCALL | `call` | `syscall.Exec`, `syscall.ForkExec`, `syscall.StartProcess` | HIGH |
+| GO-OS-START-PROCESS | `call` | `os.StartProcess` | HIGH |
+| GO-CRYPTO-BLOWFISH | `import` | `golang.org/x/crypto/blowfish` — 64-bit блок, Sweet32 | HIGH |
+| GO-CRYPTO-CAST5 | `import` | `golang.org/x/crypto/cast5` — устаревший шифр | HIGH |
+| GO-CRYPTO-MD4 | `import` | `golang.org/x/crypto/md4` — сломанный хэш | HIGH |
+| GO-CRYPTO-TEA | `import` | `golang.org/x/crypto/tea` — related-key слабость | HIGH |
+| GO-RAND-INSECURE | `call_pkg` | любой вызов `math/rand.*` | MEDIUM |
+| GO-HTTP-NO-TLS | `call` | `http.ListenAndServe` | MEDIUM |
+| GO-FILE-PERMISSIVE | `call_permissive_chmod` | `os.Chmod` с `0777`/`0666`/world-writable | MEDIUM |
+| GO-XML-EXTERNAL-ENTITY | `call` | `encoding/xml.NewDecoder`, `xml.Unmarshal` | MEDIUM |
+| GO-GOB-DECODE | `call` | `encoding/gob.NewDecoder` | MEDIUM |
+| GO-UNSAFE-POINTER | `call` | `unsafe.Pointer`, `unsafe.Add`, `unsafe.Slice` | MEDIUM |
+| GO-DEBUG-PPROF | `import` | `net/http/pprof` — регистрирует `/debug/pprof/*` | MEDIUM |
+| GO-YAML-UNSAFE | `import` | `gopkg.in/yaml.v2/v3`, `sigs.k8s.io/yaml` | MEDIUM |
+| GO-TEMPFILE-INSECURE | `call` | `os.CreateTemp`, `ioutil.TempFile` | LOW |
+| GO-CMD-INJECTION-TAINT | taint | ввод пользователя → `exec.Command` | HIGH |
+| GO-SSRF-TAINT | taint | ввод → `http.Get/Post` | HIGH |
+| GO-PATH-TRAVERSAL-TAINT | taint | ввод → `os.Open/ReadFile` | HIGH |
 
 **Taint analysis** (`checkTaintLite`): для каждой функции отслеживает поток данных:
 - Sources: `os.Getenv()`, `r.FormValue()`, `r.Param()`, `r.Query()`
